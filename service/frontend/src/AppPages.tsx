@@ -2474,6 +2474,7 @@ export function PositionsPage() {
 export function TradePage({ token, agentInfo, onTradeSuccess }: { token: string, agentInfo?: any, onTradeSuccess?: () => void }) {
   const { t, language } = useLanguage()
   const navigate = useNavigate()
+  const location = useLocation()
   const [loading, setLoading] = useState(false)
   const [market, setMarket] = useState('us-stock')
   const [action, setAction] = useState('buy')
@@ -2485,6 +2486,23 @@ export function TradePage({ token, agentInfo, onTradeSuccess }: { token: string,
   const [currentPrice, setCurrentPrice] = useState<number | null>(null)
   const [priceLoading, setPriceLoading] = useState(false)
   const [activeChallenges, setActiveChallenges] = useState<any[]>([])
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const querySymbol = params.get('symbol')
+    const queryMarket = params.get('market')
+    const queryAction = params.get('action')
+    if (queryMarket && ['us-stock', 'crypto', 'polymarket'].includes(queryMarket)) {
+      setMarket(queryMarket)
+    }
+    if (querySymbol) {
+      setSymbol(querySymbol.trim().toUpperCase())
+      setCurrentPrice(null)
+    }
+    if (queryAction && ['buy', 'sell', 'short', 'cover'].includes(queryAction)) {
+      setAction(queryAction)
+    }
+  }, [location.search])
 
   // Get current time for display
   const [currentTime, setCurrentTime] = useState(() => new Date().toISOString())

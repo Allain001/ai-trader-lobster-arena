@@ -838,6 +838,47 @@ async def build_network_edges_loop():
         await asyncio.sleep(interval_s)
 
 
+async def run_lobster_arena_agents_loop():
+    """Background task that wakes the trading agents and publishes a full paper-trading cycle."""
+    from lobster_agent_runtime import get_lobster_autorun_status, run_lobster_agent_cycle
+
+    initial_delay = _env_int("LOBSTER_ARENA_AUTORUN_INITIAL_DELAY", 10, minimum=0)
+    if initial_delay:
+        await asyncio.sleep(initial_delay)
+
+    while True:
+        interval_s = _env_int("LOBSTER_ARENA_AUTORUN_INTERVAL", 300, minimum=30)
+        raw_symbols = os.getenv("LOBSTER_ARENA_SYMBOLS", "NVDA,AAPL,TSLA,MSFT,SPY")
+        symbols = [item.strip().upper() for item in raw_symbols.split(",") if item.strip()]
+        use_llm = _env_bool("LOBSTER_ARENA_USE_LLM", True)
+        publish_to_platform = _env_bool("LOBSTER_ARENA_PUBLISH", True)
+        include_api_agent = _env_bool("LOBSTER_ARENA_INCLUDE_API_AGENT", True)
+        try:
+            status = get_lobster_autorun_status()
+            if status.get("running"):
+                print("[Lobster Arena Autorun] previous cycle still running; skipping")
+            else:
+                result = await asyncio.to_thread(
+                    run_lobster_agent_cycle,
+                    symbols=symbols,
+                    use_llm=use_llm,
+                    publish_to_platform=publish_to_platform,
+                    include_api_agent=include_api_agent,
+                    source="autorun",
+                )
+                print(
+                    "[Lobster Arena Autorun] "
+                    f"llm={result.get('llm', {}).get('status')} "
+                    f"enhanced={result.get('llm', {}).get('enhanced_count')} "
+                    f"trades={result.get('published', {}).get('published_trades', 0)} "
+                    f"posts={result.get('published', {}).get('created_posts', 0)}"
+                )
+        except Exception as e:
+            print(f"[Lobster Arena Autorun Error] {e}")
+
+        await asyncio.sleep(interval_s)
+
+
 BACKGROUND_TASK_REGISTRY = {
     "prices": update_position_prices,
     "profit_history": record_profit_history,
@@ -853,6 +894,7 @@ BACKGROUND_TASK_REGISTRY = {
     "macro_signals": refresh_macro_signal_snapshots_loop,
     "etf_flows": refresh_etf_flow_snapshots_loop,
     "stock_analysis": refresh_stock_analysis_snapshots_loop,
+    "lobster_arena_autorun": run_lobster_arena_agents_loop,
 }
 
 

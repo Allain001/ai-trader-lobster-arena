@@ -270,6 +270,9 @@ export const MARKETS = [
 ]
 
 export function isUSMarketOpen(): boolean {
+  if (import.meta.env.VITE_PAPER_TRADING_ALWAYS_OPEN !== 'false') {
+    return true
+  }
   const now = new Date()
   const etNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }))
 

@@ -1,7 +1,8 @@
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
+from market_candles import MarketCandleError, get_market_candles, get_market_watchlist
 from market_intel import (
     get_etf_flows_payload,
     get_featured_stock_analysis_payload,
@@ -47,3 +48,16 @@ def register_market_routes(app: FastAPI) -> None:
     @app.get('/api/market-intel/stocks/{symbol}/history')
     async def market_intel_stock_history(symbol: str, limit: int = 10):
         return get_stock_analysis_history_payload(symbol, limit=limit)
+
+    @app.get('/api/market/watchlist')
+    async def market_watchlist():
+        return get_market_watchlist()
+
+    @app.get('/api/market/candles')
+    async def market_candles(symbol: str, range: str = "3mo", interval: str = "1d"):
+        try:
+            return get_market_candles(symbol, range_=range, interval=interval)
+        except MarketCandleError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch candles for {symbol}: {exc}") from exc

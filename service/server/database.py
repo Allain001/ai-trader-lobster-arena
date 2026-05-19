@@ -607,6 +607,27 @@ def init_database():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lobster_arena_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT UNIQUE NOT NULL,
+            source TEXT NOT NULL,
+            symbols TEXT NOT NULL,
+            initial_cash REAL NOT NULL,
+            fee_rate REAL NOT NULL,
+            max_position REAL NOT NULL,
+            use_llm INTEGER DEFAULT 0,
+            publish_to_platform INTEGER DEFAULT 0,
+            include_api_agent INTEGER DEFAULT 0,
+            status TEXT NOT NULL,
+            summary_json TEXT,
+            result_json TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            finished_at TEXT
+        )
+    """)
+
     cursor.execute("SELECT COALESCE(MAX(signal_id), 0) AS max_signal_id FROM signals")
     max_signal_id = int(cursor.fetchone()["max_signal_id"] or 0)
     cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_sequence_id FROM signal_sequence")
@@ -1406,6 +1427,16 @@ def init_database():
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_market_news_category_created
         ON market_news_snapshots(category, created_at DESC)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_lobster_arena_runs_created
+        ON lobster_arena_runs(created_at DESC)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_lobster_arena_runs_source_created
+        ON lobster_arena_runs(source, created_at DESC)
     """)
 
     cursor.execute("""

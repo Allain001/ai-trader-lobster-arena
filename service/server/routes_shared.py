@@ -38,6 +38,13 @@ EXPERIMENT_NOTIFICATION_TYPES = (
     'team_mission_invite',
 )
 
+
+def paper_trading_always_open() -> bool:
+    configured = os.getenv("PAPER_TRADING_ALWAYS_OPEN")
+    if configured is not None:
+        return configured.strip().lower() in {"1", "true", "yes", "on"}
+    return os.getenv("ENVIRONMENT", "development").strip().lower() == "development"
+
 TRENDING_CACHE_KEY = 'trending:top20'
 LEADERBOARD_CACHE_KEY_PREFIX = 'leaderboard:profit_history'
 GROUPED_SIGNALS_CACHE_KEY_PREFIX = 'signals:grouped'
@@ -306,6 +313,8 @@ def is_us_market_open() -> bool:
 
 
 def is_market_open(market: str) -> bool:
+    if paper_trading_always_open():
+        return True
     if market in ('crypto', 'polymarket'):
         return True
     if market == 'us-stock':
@@ -348,6 +357,8 @@ def validate_executed_at(executed_at: str, market: str) -> tuple[bool, str]:
         time_in_minutes = dt_et.hour * 60 + dt_et.minute
 
         if market == 'us-stock':
+            if paper_trading_always_open():
+                return True, ''
             is_weekday = day < 5
             is_market_hours = 570 <= time_in_minutes < 960
             if not (is_weekday and is_market_hours):

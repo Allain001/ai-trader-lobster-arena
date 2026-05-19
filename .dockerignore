@@ -1,0 +1,12 @@
+.git
+.env
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+**/dist
+service/server/data
+service/server/logs
+test-results
+*.png
+*.log
+*.tmp

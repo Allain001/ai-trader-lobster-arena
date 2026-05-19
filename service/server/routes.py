@@ -12,8 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import CORS_ORIGINS
 from routes_agent import register_agent_routes
 from routes_challenges import register_challenge_routes
+from routes_demo import register_demo_routes
 from routes_experiments import register_experiment_routes
 from routes_market import register_market_routes
+from routes_lobster_arena import register_lobster_arena_routes
 from routes_misc import register_misc_routes
 from routes_research import register_research_routes
 from routes_shared import RouteContext
@@ -43,6 +45,8 @@ def create_app() -> FastAPI:
 
     ctx = RouteContext()
     register_market_routes(app)
+    register_lobster_arena_routes(app)
+    register_demo_routes(app, ctx)
     register_agent_routes(app, ctx)
     register_signal_routes(app, ctx)
     register_trading_routes(app, ctx)

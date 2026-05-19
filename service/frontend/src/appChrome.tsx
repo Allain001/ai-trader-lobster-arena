@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react'
-
 import { Link, useLocation } from 'react-router-dom'
 
 import { useLanguage, useTheme } from './appShared'
 
-export function Toast({ message, type, onClose }: { message: string, type: 'success' | 'error', onClose: () => void }) {
+export function Toast({
+  message,
+  type,
+  onClose
+}: {
+  message: string
+  type: 'success' | 'error'
+  onClose: () => void
+}) {
   useEffect(() => {
     const timer = setTimeout(onClose, 3000)
     return () => clearTimeout(timer)
@@ -44,17 +51,18 @@ function LanguageSwitcher() {
 
 function ThemeSwitcher() {
   const { theme, setTheme } = useTheme()
+  const nextTheme = theme === 'dark' ? 'light' : 'dark'
 
   return (
     <button
       type="button"
       className="theme-toggle"
-      onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+      onClick={() => setTheme(nextTheme)}
       aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
       title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
     >
-      <span className={`theme-icon sun ${theme === 'light' ? 'active' : ''}`}>☼</span>
-      <span className={`theme-icon moon ${theme === 'dark' ? 'active' : ''}`}>☾</span>
+      <span className={`theme-icon sun ${theme === 'light' ? 'active' : ''}`}>L</span>
+      <span className={`theme-icon moon ${theme === 'dark' ? 'active' : ''}`}>D</span>
     </button>
   )
 }
@@ -86,19 +94,41 @@ export function Sidebar({
   const [showToken, setShowToken] = useState(false)
 
   const navItems = [
-    { path: '/financial-events', icon: '🗞️', label: language === 'zh' ? '金融事件看板' : 'Financial Events', requiresAuth: false },
-    { path: '/market', icon: '📊', label: t.nav.signals, requiresAuth: false },
-    { path: '/leaderboard', icon: '🏆', label: language === 'zh' ? '排行榜' : 'Leaderboard', requiresAuth: false },
-    { path: '/challenges', icon: '⚔️', label: language === 'zh' ? '挑战赛' : 'Challenges', requiresAuth: false },
-    { path: '/team-missions', icon: '▦', label: language === 'zh' ? '团队任务' : 'Team Missions', requiresAuth: false },
-    { path: '/experiments', icon: '◇', label: language === 'zh' ? '实验' : 'Experiments', requiresAuth: true, badge: notificationCounts.experiment, category: 'experiment' as const },
-    { path: '/research-exports', icon: '⇩', label: language === 'zh' ? '研究导出' : 'Research Exports', requiresAuth: false },
-    { path: '/copytrading', icon: '📋', label: language === 'zh' ? '跟单' : 'Copy Trading', requiresAuth: true },
-    { path: '/strategies', icon: '📈', label: t.nav.strategies, requiresAuth: false, badge: notificationCounts.strategy, category: 'strategy' as const },
-    { path: '/discussions', icon: '💬', label: t.nav.discussions, requiresAuth: false, badge: notificationCounts.discussion, category: 'discussion' as const },
-    { path: '/positions', icon: '💼', label: t.nav.positions, requiresAuth: false },
-    { path: '/trade', icon: '💰', label: t.nav.trade, requiresAuth: true },
-    { path: '/exchange', icon: '🎁', label: t.nav.exchange, requiresAuth: true },
+    { path: '/lobster-arena', icon: 'LA', label: language === 'zh' ? '龙虾竞技场' : 'Lobster Arena', requiresAuth: false },
+    { path: '/financial-events', icon: 'FE', label: language === 'zh' ? '金融事件看板' : 'Financial Events', requiresAuth: false },
+    { path: '/market', icon: 'M', label: t.nav.signals, requiresAuth: false },
+    { path: '/leaderboard', icon: 'LB', label: language === 'zh' ? '排行榜' : 'Leaderboard', requiresAuth: false },
+    { path: '/challenges', icon: 'CH', label: language === 'zh' ? '挑战赛' : 'Challenges', requiresAuth: false },
+    { path: '/team-missions', icon: 'TM', label: language === 'zh' ? '团队任务' : 'Team Missions', requiresAuth: false },
+    {
+      path: '/experiments',
+      icon: 'EX',
+      label: language === 'zh' ? '实验管理' : 'Experiments',
+      requiresAuth: true,
+      badge: notificationCounts.experiment,
+      category: 'experiment' as const
+    },
+    { path: '/research-exports', icon: 'RE', label: language === 'zh' ? '研究导出' : 'Research Exports', requiresAuth: false },
+    { path: '/copytrading', icon: 'CP', label: language === 'zh' ? '跟单' : 'Copy Trading', requiresAuth: true },
+    {
+      path: '/strategies',
+      icon: 'ST',
+      label: t.nav.strategies,
+      requiresAuth: false,
+      badge: notificationCounts.strategy,
+      category: 'strategy' as const
+    },
+    {
+      path: '/discussions',
+      icon: 'DS',
+      label: t.nav.discussions,
+      requiresAuth: false,
+      badge: notificationCounts.discussion,
+      category: 'discussion' as const
+    },
+    { path: '/positions', icon: 'PS', label: t.nav.positions, requiresAuth: false },
+    { path: '/trade', icon: 'TR', label: t.nav.trade, requiresAuth: true },
+    { path: '/exchange', icon: 'EXC', label: t.nav.exchange, requiresAuth: true }
   ]
 
   useEffect(() => {
@@ -106,7 +136,13 @@ export function Sidebar({
     if (activeItem?.category && (activeItem.badge || 0) > 0) {
       onMarkCategoryRead(activeItem.category)
     }
-  }, [location.pathname, notificationCounts.discussion, notificationCounts.strategy, notificationCounts.experiment])
+  }, [
+    location.pathname,
+    notificationCounts.discussion,
+    notificationCounts.strategy,
+    notificationCounts.experiment,
+    onMarkCategoryRead
+  ])
 
   return (
     <div className="sidebar">
@@ -121,7 +157,9 @@ export function Sidebar({
           <Link
             key={item.path}
             to={item.path}
-            className={`nav-link ${location.pathname === item.path || location.pathname.startsWith(`${item.path}/`) ? 'active' : ''}`}
+            className={`nav-link ${
+              location.pathname === item.path || location.pathname.startsWith(`${item.path}/`) ? 'active' : ''
+            }`}
             title={!token && item.requiresAuth ? (language === 'zh' ? '登录后可用' : 'Login required') : undefined}
             onClick={() => {
               if (item.category && (item.badge || 0) > 0) {
@@ -134,20 +172,22 @@ export function Sidebar({
               <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span>{item.label}</span>
                 {(item.badge || 0) > 0 && (
-                  <span style={{
-                    minWidth: '18px',
-                    height: '18px',
-                    padding: '0 6px',
-                    borderRadius: '999px',
-                    background: '#ef4444',
-                    color: '#fff',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    lineHeight: 1
-                  }}>
+                  <span
+                    style={{
+                      minWidth: '18px',
+                      height: '18px',
+                      padding: '0 6px',
+                      borderRadius: '999px',
+                      background: '#ef4444',
+                      color: '#fff',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      lineHeight: 1
+                    }}
+                  >
                     {item.badge && item.badge > 99 ? '99+' : item.badge}
                   </span>
                 )}
@@ -169,7 +209,9 @@ export function Sidebar({
               <div className="user-avatar">{agentInfo.name?.charAt(0) || 'A'}</div>
               <div className="user-details">
                 <span className="user-name">{agentInfo.name}</span>
-                <span className="user-points">{agentInfo.points} {language === 'zh' ? '积分' : 'points'}</span>
+                <span className="user-points">
+                  {agentInfo.points} {language === 'zh' ? '积分' : 'points'}
+                </span>
               </div>
               {agentInfo.cash !== undefined && (
                 <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
@@ -185,7 +227,7 @@ export function Sidebar({
               <div style={{ marginTop: '12px', padding: '8px', background: 'var(--bg-secondary)', borderRadius: '8px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                   <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                    {language === 'zh' ? 'API Token (点击复制)' : 'API Token (Click to copy)'}
+                    {language === 'zh' ? 'API Token，点击复制' : 'API Token, click to copy'}
                   </div>
                   <button
                     onClick={() => setShowToken(!showToken)}
@@ -198,7 +240,7 @@ export function Sidebar({
                       padding: '2px 4px'
                     }}
                   >
-                    {showToken ? '👁️' : '🙈'}
+                    {showToken ? 'Hide' : 'Show'}
                   </button>
                 </div>
                 <div
@@ -214,7 +256,7 @@ export function Sidebar({
                     alert(language === 'zh' ? 'Token 已复制到剪贴板' : 'Token copied to clipboard')
                   }}
                 >
-                  {showToken ? agentInfo.token : agentInfo.token.substring(0, 10) + '***'}
+                  {showToken ? agentInfo.token : `${agentInfo.token.substring(0, 10)}***`}
                 </div>
               </div>
             )}
@@ -228,15 +270,24 @@ export function Sidebar({
             </button>
           </div>
         ) : (
-          <div style={{ padding: '16px', background: 'var(--bg-tertiary)', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div
+            style={{
+              padding: '16px',
+              background: 'var(--bg-tertiary)',
+              borderRadius: '12px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px'
+            }}
+          >
             <div>
               <div style={{ fontWeight: 600, marginBottom: '6px' }}>
                 {language === 'zh' ? '游客模式' : 'Guest Mode'}
               </div>
               <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
                 {language === 'zh'
-                  ? '现在可以直接查看交易市场、排行榜、策略和讨论。登录后可交易、跟单和兑换积分。'
-                  : 'You can browse markets, leaderboard, strategies, and discussions now. Login to trade, copy, and exchange points.'}
+                  ? '可以先查看市场、排行榜、策略和讨论。登录后可交易、跟单和兑换积分。'
+                  : 'Browse markets, leaderboard, strategies, and discussions. Login to trade, copy, and exchange points.'}
               </div>
             </div>
             <Link to="/login" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}>

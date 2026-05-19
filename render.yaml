@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: ai-trader-lobster-arena
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PAPER_TRADING_ALWAYS_OPEN
+        value: "true"
+      - key: AI_TRADER_API_BACKGROUND_TASKS
+        value: "false"
+      - key: AI_TRADER_BACKGROUND_TASKS
+        value: lobster_arena_autorun
+      - key: LOBSTER_ARENA_USE_LLM
+        value: "false"
+      - key: LOBSTER_ARENA_PUBLISH
+        value: "false"
+      - key: LOBSTER_ARENA_INCLUDE_API_AGENT
+        value: "true"
+      - key: DB_PATH
+        value: /tmp/clawtrader.db
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_API_BASE
+        value: https://api.openai.com/v1
+      - key: LLM_MODEL
+        value: gpt-4o-mini

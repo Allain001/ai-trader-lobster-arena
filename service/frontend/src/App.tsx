@@ -27,6 +27,7 @@ import {
 } from './AppPages'
 import { ChallengePage } from './ChallengePage'
 import { ExperimentAdminPage } from './ExperimentAdminPage'
+import { LobsterArenaPage } from './LobsterArenaPage'
 import { ResearchExportsPage } from './ResearchExportsPage'
 import { TeamMissionsPage } from './TeamMissionsPage'
 import { Language, getT } from './i18n'
@@ -260,6 +261,7 @@ function AppRouter({
             <Route path="/experiments" element={<ExperimentAdminPage token={token} />} />
             <Route path="/research-exports" element={<ResearchExportsPage />} />
             <Route path="/financial-events" element={<FinancialEventsPage />} />
+            <Route path="/lobster-arena" element={<LobsterArenaPage />} />
             <Route path="/copytrading" element={token ? <CopyTradingPage token={token} /> : <Navigate to="/login" replace />} />
             <Route path="/strategies" element={<StrategiesPage />} />
             <Route path="/discussions" element={<DiscussionsPage />} />
