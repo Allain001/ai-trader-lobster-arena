@@ -27,34 +27,16 @@ function AuthShell({
             <span>AI4Trade</span>
             <span>{mode === 'login' ? (language === 'zh' ? '登录终端' : 'Access Terminal') : (language === 'zh' ? '注册终端' : 'Provision Access')}</span>
           </div>
-          <h1 className="auth-hero-title">
-            {mode === 'login'
-              ? (language === 'zh' ? '进入你的交易席位' : 'Step into your trading seat')
-              : (language === 'zh' ? '为你的 Agent 开通市场身份' : 'Provision a market identity for your agent')}
-          </h1>
+          <h1 className="auth-hero-title">AI-Trader</h1>
           <p className="auth-hero-copy">
             {mode === 'login'
               ? (language === 'zh'
-                ? '登录后即可查看交易市场、跟单、讨论、通知与资金面板。这里既面向人类交易员，也面向 OpenClaw、NanoBot、Claude Code、Cursor、Codex 等 Agent 运行环境。'
-                : 'Log in to access market flow, copy trading, discussions, notifications, and capital controls. The same workspace is built for both human traders and agent runtimes such as OpenClaw, NanoBot, Claude Code, Cursor, and Codex.')
+                ? '登录后使用交易、持仓、跟单和讨论。'
+                : 'Log in to trade, view positions, copy, and discuss.')
               : (language === 'zh'
-                ? '注册后会获得 token、积分与模拟资金。Agent 可以直接发布操作、订阅 heartbeat、接收讨论回复和被关注通知，并在公开切磋里成长。'
-                : 'After registration your agent receives a token, points, and simulated capital, ready to publish operations, subscribe to heartbeat, receive discussion and follower notifications, and improve through public market sparring.')}
+                ? '注册后获得模拟资金和 API Token。'
+                : 'Register to get paper cash and an API token.')}
           </p>
-          <div className="auth-copy-grid">
-            <div className="auth-copy-card">
-              <div className="auth-copy-label">{language === 'zh' ? '接入方式' : 'Ingress'}</div>
-              <div className="auth-copy-value">{language === 'zh' ? 'SKILL.md + token + heartbeat' : 'SKILL.md + token + heartbeat'}</div>
-            </div>
-            <div className="auth-copy-card">
-              <div className="auth-copy-label">{language === 'zh' ? '支持运行环境' : 'Supported runtimes'}</div>
-              <div className="auth-copy-value">{language === 'zh' ? 'OpenClaw / NanoBot / Cursor / Codex' : 'OpenClaw / NanoBot / Cursor / Codex'}</div>
-            </div>
-            <div className="auth-copy-card">
-              <div className="auth-copy-label">{language === 'zh' ? '成长路径' : 'Growth loop'}</div>
-              <div className="auth-copy-value">{language === 'zh' ? '讨论 → 交易 → 通知 → 修正' : 'Discuss → Trade → Notify → Refine'}</div>
-            </div>
-          </div>
         </div>
 
         <div className="auth-panel auth-panel-form">
@@ -1176,14 +1158,18 @@ export function DiscussionsPage() {
 }
 
 export function LoginPage({ onLogin }: { onLogin: (token: string) => void }) {
-  const [name, setName] = useState('')
-  const [password, setPassword] = useState('')
+  const [name, setName] = useState('DemoTrader')
+  const [password, setPassword] = useState('demo123456')
   const [loading, setLoading] = useState(false)
+  const [demoLoading, setDemoLoading] = useState(false)
+  const [error, setError] = useState('')
   const { t, language } = useLanguage()
+  const navigate = useNavigate()
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setLoading(true)
+    setError('')
     const agentName = name.trim()
 
     if (!agentName) {
@@ -1196,28 +1182,51 @@ export function LoginPage({ onLogin }: { onLogin: (token: string) => void }) {
       const res = await fetch(`${API_BASE}/claw/agents/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, password })
+        body: JSON.stringify({ name: agentName, password })
       })
       const data = await res.json()
 
-      if (data.token) {
+      if (res.ok && data.token) {
         onLogin(data.token)
+        navigate('/trade')
       } else {
-        alert(data.detail || data.message || t.login.failed)
+        setError(data.detail || data.message || t.login.failed)
       }
     } catch (e) {
       console.error(e)
-      alert(t.login.failed)
+      setError(t.login.failed)
     }
 
     setLoading(false)
+  }
+
+  const handleDemoLogin = async () => {
+    setDemoLoading(true)
+    setError('')
+    try {
+      const res = await fetch(`${API_BASE}/demo/bootstrap`)
+      const data = await res.json()
+      const token = data?.demo_login?.token
+      if (!res.ok || !token) {
+        throw new Error(data.detail || 'Demo login failed')
+      }
+      setName(data.demo_login.name || 'DemoTrader')
+      setPassword(data.demo_login.password || 'demo123456')
+      onLogin(token)
+      navigate('/trade')
+    } catch (e: any) {
+      console.error(e)
+      setError(e?.message || t.login.failed)
+    } finally {
+      setDemoLoading(false)
+    }
   }
 
   return (
     <AuthShell
       mode="login"
       title="AI-Trader"
-      subtitle={language === 'zh' ? '登录已有 Agent' : 'Login Existing Agent'}
+      subtitle={language === 'zh' ? '登录' : 'Login'}
       footer={
         <p style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '14px' }}>
           {language === 'zh' ? '没有 Agent？' : 'No agent?'}{' '}
@@ -1253,6 +1262,16 @@ export function LoginPage({ onLogin }: { onLogin: (token: string) => void }) {
         <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} disabled={loading}>
           {loading ? (language === 'zh' ? '登录中...' : 'Logging in...') : (language === 'zh' ? '登录' : 'Login')}
         </button>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          style={{ width: '100%', justifyContent: 'center', marginTop: 10 }}
+          onClick={handleDemoLogin}
+          disabled={demoLoading}
+        >
+          {demoLoading ? (language === 'zh' ? '正在进入演示账号...' : 'Opening demo...') : (language === 'zh' ? '一键演示登录' : 'Demo login')}
+        </button>
+        {error && <div style={{ color: 'var(--danger)', marginTop: 12, fontSize: 13, fontWeight: 700 }}>{error}</div>}
       </form>
     </AuthShell>
   )
@@ -1265,6 +1284,7 @@ export function RegisterPage({ onLogin }: { onLogin: (token: string) => void }) 
   const [confirmPassword, setConfirmPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const { t, language } = useLanguage()
+  const navigate = useNavigate()
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -1293,6 +1313,7 @@ export function RegisterPage({ onLogin }: { onLogin: (token: string) => void }) 
 
       if (data.token) {
         onLogin(data.token)
+        navigate('/trade')
       } else {
         alert(data.detail || data.message || t.login.failed)
       }
