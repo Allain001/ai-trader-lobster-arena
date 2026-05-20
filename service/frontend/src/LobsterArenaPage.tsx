@@ -1334,6 +1334,19 @@ export function LobsterArenaPage() {
           <div style={{ display: 'grid', gap: 12 }}>
             <section style={{ ...panelStyle, padding: 14 }}>
               <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>风控与系统状态</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+                {[
+                  ['API 智能体', result.api_agent?.status || '-'],
+                  ['同步发布', result.published?.enabled ? `${result.published.published_trades || 0} 笔 / ${result.published.created_posts || 0} 帖` : '关闭'],
+                  ['最大暴露', result.risk_summary ? `${Math.round(result.risk_summary.max_single_symbol_exposure * 100)}% / ${Math.round(result.risk_summary.max_position_limit * 100)}%` : '-'],
+                  ['LLM 回退', result.llm?.fallback_reason || '无']
+                ].map(([label, value]) => (
+                  <div key={label} style={{ border: '1px solid rgba(148, 163, 184, 0.12)', borderRadius: 8, padding: 10, background: '#0a141d' }}>
+                    <div style={{ color: '#64748b', fontSize: 11, fontWeight: 800 }}>{label}</div>
+                    <div style={{ color: '#e2e8f0', fontSize: 12, fontWeight: 900, marginTop: 5 }}>{value}</div>
+                  </div>
+                ))}
+              </div>
               <div style={{ display: 'grid', gap: 9 }}>
                 {(result.risk_events || []).map((event, index) => (
                   <div key={`${event.code || event.message}-${index}`} style={{ display: 'grid', gridTemplateColumns: '10px minmax(0, 1fr)', gap: 9, alignItems: 'start' }}>
@@ -1347,6 +1360,7 @@ export function LobsterArenaPage() {
               <div style={{ borderTop: '1px solid rgba(148, 163, 184, 0.13)', marginTop: 12, paddingTop: 12, color: '#94a3b8', fontSize: 12, lineHeight: 1.7 }}>
                 {result.broker_status?.message || '模拟交易模式，真实下单关闭。'}<br />
                 {result.llm?.message || llmStatusLabel(result.llm?.status)}
+                {result.llm?.errors?.length ? <><br />{result.llm.errors[0]}</> : null}
               </div>
             </section>
 
