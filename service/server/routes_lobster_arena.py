@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from lobster_agent_runtime import (
     get_lobster_autorun_status,
     get_lobster_run,
+    get_lobster_system_status,
     list_lobster_runs,
     run_lobster_agent_cycle,
 )
@@ -52,6 +53,10 @@ def register_lobster_arena_routes(app: FastAPI) -> None:
     @app.get("/api/lobster-arena/autorun/status")
     async def lobster_arena_autorun_status():
         return get_lobster_autorun_status()
+
+    @app.get("/api/lobster-arena/status")
+    async def lobster_arena_status():
+        return get_lobster_system_status()
 
     @app.get("/api/lobster-arena/runs")
     async def lobster_arena_runs(limit: int = 20):

@@ -59,6 +59,10 @@ type Decision = {
   confidence: number
   reason: string
   target_fraction: number
+  signals?: Record<string, any>
+  risk_note?: string
+  rule_reason?: string
+  llm_enhanced?: boolean
 }
 
 type Trade = {
@@ -96,14 +100,44 @@ type ArenaResult = {
     change_percent: number
     market_time: string
     currency: string
+    source?: string
   }>
   decisions: Decision[]
   leaderboard: LeaderboardRow[]
+  agent_profiles?: Record<string, {
+    role: string
+    style: string
+    focus: string[]
+    risk_rule: string
+  }>
+  agent_reports?: Array<{
+    agent: string
+    profile: {
+      role: string
+      style: string
+      focus: string[]
+      risk_rule: string
+    }
+    decision_counts: Record<'BUY' | 'SELL' | 'HOLD', number>
+    trade_count: number
+    return_percent: number
+    total_value?: number
+    positions: Record<string, number>
+    review: string
+  }>
+  risk_events?: Array<{
+    severity: 'ok' | 'info' | 'warning' | 'error'
+    code?: string
+    agent?: string
+    symbol?: string
+    message: string
+  }>
   api_agent?: {
     enabled: boolean
     status: string
     decision_count: number
     agent_name?: string
+    llm_decision_permission?: string
     errors?: string[]
   }
   llm?: {
@@ -111,6 +145,7 @@ type ArenaResult = {
     status: string
     enhanced_count: number
     message?: string
+    fallback_reason?: string | null
     errors?: string[]
   }
   published?: {
@@ -135,6 +170,27 @@ type ArenaResult = {
     max_position_limit: number
     paper_trading_only: boolean
   }
+  system_status?: LobsterSystemStatus
+}
+
+type LobsterSystemStatus = {
+  database?: {
+    backend?: string
+    database_path?: string
+    temporary_sqlite?: boolean
+    persistence_note?: string
+  }
+  llm?: {
+    configured: boolean
+    model: string
+    decision_permission: string
+  }
+  broker?: {
+    mode: string
+    live_orders_enabled: boolean
+    message: string
+  }
+  paper_trading_only?: boolean
 }
 
 type LobsterRunSummary = {
@@ -224,6 +280,22 @@ function actionLabel(action: string) {
   if (action === 'BUY') return '买入'
   if (action === 'SELL') return '卖出'
   return '持有'
+}
+
+function llmStatusLabel(status?: string) {
+  if (status === 'ok') return 'LLM 已增强'
+  if (status === 'partial') return 'LLM 部分增强'
+  if (status === 'not_configured') return '未配置 LLM'
+  if (status === 'disabled') return '本地策略'
+  if (status === 'error') return 'LLM 回退'
+  return '等待运行'
+}
+
+function severityColor(severity?: string) {
+  if (severity === 'ok') return '#22c55e'
+  if (severity === 'warning') return '#f59e0b'
+  if (severity === 'error') return '#ef4444'
+  return '#38bdf8'
 }
 
 function formatPositions(positions: Record<string, number>) {
@@ -530,6 +602,8 @@ export function LobsterArenaPage() {
   const [publishToPlatform, setPublishToPlatform] = useState(false)
   const [result, setResult] = useState<ArenaResult | null>(null)
   const [runHistory, setRunHistory] = useState<LobsterRunSummary[]>([])
+  const [systemStatus, setSystemStatus] = useState<LobsterSystemStatus | null>(null)
+  const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [watchlist, setWatchlist] = useState<WatchlistStock[]>([])
@@ -574,6 +648,7 @@ export function LobsterArenaPage() {
     [trades, selectedSymbol]
   )
   const bestAgent = useMemo(() => result?.leaderboard[0], [result])
+  const activeSystemStatus = result?.system_status || systemStatus
   const chartMarkers = useMemo(() => {
     const tradeMarkers = selectedTrades.map((trade) => ({
       time: toDateKey(trade.timestamp),
@@ -618,6 +693,34 @@ export function LobsterArenaPage() {
     } catch (err) {
       console.error(err)
       setRunHistory([])
+    }
+  }
+
+  const loadSystemStatus = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/lobster-arena/status`)
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.detail || 'status_load_failed')
+      setSystemStatus(payload)
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  const loadRunDetail = async (runId: string) => {
+    setHistoryLoadingId(runId)
+    setError(null)
+    try {
+      const response = await fetch(`${API_BASE}/lobster-arena/runs/${encodeURIComponent(runId)}`)
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.detail || 'run_detail_failed')
+      if (payload.result) {
+        setResult(payload.result)
+      }
+    } catch (err: any) {
+      setError(err?.message || '历史详情加载失败。')
+    } finally {
+      setHistoryLoadingId(null)
     }
   }
 
@@ -682,7 +785,11 @@ export function LobsterArenaPage() {
         const payload = await response.json().catch(() => ({}))
         throw new Error(payload.detail || 'Failed to run Lobster Arena.')
       }
-      setResult(await response.json())
+      const payload = await response.json()
+      setResult(payload)
+      if (payload.system_status) {
+        setSystemStatus(payload.system_status)
+      }
       loadRunHistory()
     } catch (err: any) {
       setError(err?.message || 'Failed to run Lobster Arena.')
@@ -694,6 +801,7 @@ export function LobsterArenaPage() {
   useEffect(() => {
     loadWatchlist()
     loadRunHistory()
+    loadSystemStatus()
     runArena()
   }, [])
 
@@ -762,7 +870,7 @@ export function LobsterArenaPage() {
         </button>
       </div>
 
-      <section style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : 'repeat(4, minmax(0, 1fr))', gap: 12, marginBottom: 12 }}>
+      <section style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : 'repeat(6, minmax(0, 1fr))', gap: 12, marginBottom: 12 }}>
         <div style={{ ...panelStyle, padding: 14 }}>
           <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>最近运行</div>
           <div style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 900, marginTop: 6 }}>{result?.run_id || runHistory[0]?.run_id || '-'}</div>
@@ -783,6 +891,18 @@ export function LobsterArenaPage() {
           <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>历史记录</div>
           <div style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 900, marginTop: 6 }}>
             已保存 {runHistory.length} 次运行
+          </div>
+        </div>
+        <div style={{ ...panelStyle, padding: 14 }}>
+          <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>LLM 状态</div>
+          <div style={{ color: result?.llm?.status === 'error' ? '#f59e0b' : '#e2e8f0', fontSize: 14, fontWeight: 900, marginTop: 6 }}>
+            {llmStatusLabel(result?.llm?.status)}
+          </div>
+        </div>
+        <div style={{ ...panelStyle, padding: 14 }}>
+          <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>数据持久化</div>
+          <div style={{ color: activeSystemStatus?.database?.temporary_sqlite ? '#f59e0b' : '#22c55e', fontSize: 14, fontWeight: 900, marginTop: 6 }}>
+            {activeSystemStatus?.database?.temporary_sqlite ? '临时 SQLite' : activeSystemStatus?.database?.backend || 'SQLite'}
           </div>
         </div>
       </section>
@@ -1038,10 +1158,21 @@ export function LobsterArenaPage() {
                     </div>
                     <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>
                       信心 {Math.round(decision.confidence * 100)}% · 仓位 {Math.round(decision.target_fraction * 100)}%
+                      {decision.llm_enhanced ? ' · LLM 已增强' : ''}
                     </div>
                     <div style={{ color: '#a7b4c5', fontSize: 13, lineHeight: 1.6, marginTop: 8 }}>
                       {decision.reason}
                     </div>
+                    {decision.signals && (
+                      <div style={{ color: '#64748b', fontSize: 12, lineHeight: 1.6, marginTop: 8 }}>
+                        动量 {Number(decision.signals.momentum_percent || 0).toFixed(2)}% · 波动 {Number(decision.signals.volatility_percent || 0).toFixed(2)}% · 数据 {decision.signals.data_source || '-'}
+                      </div>
+                    )}
+                    {decision.risk_note && (
+                      <div style={{ color: '#fbbf24', fontSize: 12, lineHeight: 1.6, marginTop: 6 }}>
+                        {decision.risk_note}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1098,10 +1229,15 @@ export function LobsterArenaPage() {
             同步到平台账户、持仓、策略和讨论
           </label>
         </div>
+        <div style={{ marginTop: 12, color: '#94a3b8', fontSize: 12, lineHeight: 1.7 }}>
+          {activeSystemStatus?.database?.persistence_note || '当前保留 SQLite 低成本部署方案。'}
+          {' '}LLM 只增强中文解释，不改动作、仓位和风控；真实下单始终关闭。
+        </div>
         {error && <div style={{ marginTop: 14, color: '#ef4444', fontWeight: 800 }}>{error}</div>}
       </section>
 
       {result && (
+        <>
         <section style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : 'minmax(420px, 1fr) minmax(420px, 1fr)', gap: 12, marginTop: 12 }}>
           <div style={panelStyle}>
             <div style={{ padding: 14, borderBottom: '1px solid rgba(148, 163, 184, 0.13)', fontWeight: 900 }}>智能体排行榜</div>
@@ -1166,6 +1302,93 @@ export function LobsterArenaPage() {
             </div>
           </div>
         </section>
+
+        <section style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : 'minmax(420px, 1.2fr) minmax(320px, 0.8fr)', gap: 12, marginTop: 12 }}>
+          <div style={panelStyle}>
+            <div style={{ padding: 14, borderBottom: '1px solid rgba(148, 163, 184, 0.13)', fontWeight: 900 }}>智能体复盘</div>
+            <div style={{ display: 'grid', gap: 10, padding: 14 }}>
+              {(result.agent_reports || []).map((report) => (
+                <div key={report.agent} style={{ border: '1px solid rgba(148, 163, 184, 0.14)', borderRadius: 8, padding: 12, background: '#0a141d' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                    <div>
+                      <strong style={{ color: '#f8fafc' }}>{report.agent}</strong>
+                      <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 4 }}>{report.profile.role} · {report.profile.style}</div>
+                    </div>
+                    <div style={{ color: report.return_percent >= 0 ? '#22c55e' : '#ef4444', fontWeight: 900 }}>
+                      {formatSignedPercent(report.return_percent)}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10, color: '#cbd5e1', fontSize: 12 }}>
+                    <span>买 {report.decision_counts.BUY}</span>
+                    <span>卖 {report.decision_counts.SELL}</span>
+                    <span>持有 {report.decision_counts.HOLD}</span>
+                    <span>成交 {report.trade_count}</span>
+                  </div>
+                  <div style={{ color: '#a7b4c5', fontSize: 13, lineHeight: 1.7, marginTop: 8 }}>{report.review}</div>
+                  <div style={{ color: '#fbbf24', fontSize: 12, lineHeight: 1.6, marginTop: 8 }}>{report.profile.risk_rule}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: 12 }}>
+            <section style={{ ...panelStyle, padding: 14 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>风控与系统状态</div>
+              <div style={{ display: 'grid', gap: 9 }}>
+                {(result.risk_events || []).map((event, index) => (
+                  <div key={`${event.code || event.message}-${index}`} style={{ display: 'grid', gridTemplateColumns: '10px minmax(0, 1fr)', gap: 9, alignItems: 'start' }}>
+                    <span style={{ width: 9, height: 9, borderRadius: 99, background: severityColor(event.severity), marginTop: 5 }} />
+                    <span style={{ color: '#a7b4c5', fontSize: 13, lineHeight: 1.6 }}>
+                      {event.agent ? `${event.agent} · ` : ''}{event.symbol ? `${event.symbol} · ` : ''}{event.message}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ borderTop: '1px solid rgba(148, 163, 184, 0.13)', marginTop: 12, paddingTop: 12, color: '#94a3b8', fontSize: 12, lineHeight: 1.7 }}>
+                {result.broker_status?.message || '模拟交易模式，真实下单关闭。'}<br />
+                {result.llm?.message || llmStatusLabel(result.llm?.status)}
+              </div>
+            </section>
+
+            <section style={{ ...panelStyle, padding: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 12 }}>
+                <div style={{ fontSize: 16, fontWeight: 900 }}>历史详情</div>
+                <button className="btn btn-secondary" type="button" onClick={loadRunHistory}>刷新</button>
+              </div>
+              <div style={{ display: 'grid', gap: 8, maxHeight: 280, overflowY: 'auto' }}>
+                {runHistory.length === 0 ? (
+                  <div style={{ color: '#94a3b8', fontSize: 13 }}>暂无历史运行记录。</div>
+                ) : (
+                  runHistory.map((run) => (
+                    <button
+                      key={run.run_id}
+                      type="button"
+                      onClick={() => loadRunDetail(run.run_id)}
+                      style={{
+                        border: '1px solid rgba(148, 163, 184, 0.14)',
+                        background: result.run_id === run.run_id ? 'rgba(217,169,79,0.16)' : '#0a141d',
+                        color: '#e5edf6',
+                        borderRadius: 8,
+                        padding: 10,
+                        textAlign: 'left',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        <strong style={{ fontSize: 12 }}>{run.run_id}</strong>
+                        <span style={{ color: '#94a3b8', fontSize: 12 }}>{historyLoadingId === run.run_id ? '加载中' : run.status}</span>
+                      </div>
+                      <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 5 }}>
+                        {formatShortDate(run.created_at)} · {run.summary?.trade_count || 0} 笔 · {llmStatusLabel(run.summary?.llm_status)}
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        </section>
+        </>
       )}
     </div>
   )

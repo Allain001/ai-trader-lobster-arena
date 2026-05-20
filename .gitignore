@@ -84,6 +84,9 @@ htmlcov/
 .tox/
 .nox/
 .hypothesis/
+test-results/
+*-check.json
+/*.png
 
 # ====================
 # Contract deployment

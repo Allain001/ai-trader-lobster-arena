@@ -2,6 +2,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 
+from database import get_database_status
 from market_candles import MarketCandleError, get_market_candles, get_market_watchlist
 from market_intel import (
     get_etf_flows_payload,
@@ -18,7 +19,17 @@ from routes_shared import utc_now_iso_z
 def register_market_routes(app: FastAPI) -> None:
     @app.get('/health')
     async def health_check():
-        return {'status': 'ok', 'timestamp': utc_now_iso_z()}
+        database_status = get_database_status()
+        database_path = str(database_status.get("database_path") or "")
+        temporary_sqlite = database_status.get("backend") == "sqlite" and database_path.startswith("/tmp/")
+        return {
+            'status': 'ok',
+            'timestamp': utc_now_iso_z(),
+            'database_backend': database_status.get("backend"),
+            'sqlite_temporary': temporary_sqlite,
+            'paper_trading_only': True,
+            'live_orders_enabled': False,
+        }
 
     @app.get('/api/market-intel/overview')
     async def market_intel_overview():

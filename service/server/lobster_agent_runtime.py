@@ -8,7 +8,7 @@ from typing import Any
 
 import requests
 
-from database import begin_write_transaction, get_db_connection
+from database import begin_write_transaction, get_database_status, get_db_connection
 from fees import TRADE_FEE_RATE
 from services import _reserve_signal_id, _update_position_from_signal
 from utils import hash_password
@@ -242,6 +242,34 @@ def get_lobster_autorun_status() -> dict[str, Any]:
     return dict(LAST_AUTORUN_STATUS)
 
 
+def get_lobster_system_status() -> dict[str, Any]:
+    database_status = get_database_status()
+    database_path = str(database_status.get("database_path") or "")
+    temporary_sqlite = database_status.get("backend") == "sqlite" and (
+        database_path.startswith("/tmp/")
+        or database_path.startswith("\\tmp\\")
+        or "\\AppData\\Local\\Temp\\" in database_path
+    )
+    return {
+        "database": {
+            **database_status,
+            "temporary_sqlite": temporary_sqlite,
+            "persistence_note": (
+                "当前使用 Render 临时 SQLite，适合低成本演示；服务重启或重新部署后运行记录可能丢失。"
+                if temporary_sqlite
+                else "当前数据库路径不是临时目录。"
+            ),
+        },
+        "llm": {
+            "configured": bool(os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")),
+            "model": os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "gpt-4o-mini",
+            "decision_permission": "explanation_only",
+        },
+        "broker": _broker_status(),
+        "paper_trading_only": True,
+    }
+
+
 def _broker_status() -> dict[str, Any]:
     configured = bool(os.getenv("LIVE_BROKER_API_KEY") and os.getenv("LIVE_BROKER_API_SECRET"))
     return {
@@ -428,7 +456,7 @@ def run_lobster_agent_cycle(
     source: str = "manual",
     include_api_agent: bool = False,
 ) -> dict[str, Any]:
-    from lobster_arena import run_lobster_arena
+    from lobster_arena import build_agent_reports, run_lobster_arena
 
     run_id = f"lobster_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
     LAST_AUTORUN_STATUS.update(
@@ -448,10 +476,12 @@ def run_lobster_agent_cycle(
             include_api_agent=include_api_agent,
         )
         result["llm"] = enhance_decisions_with_llm(result, use_llm)
+        result["agent_reports"] = build_agent_reports(result)
         result["run_id"] = run_id
         result["source"] = source
         result["broker_status"] = _broker_status()
         result["risk_summary"] = _risk_summary(result)
+        result["system_status"] = get_lobster_system_status()
         result["published"] = (
             publish_arena_to_platform(result)
             if publish_to_platform
@@ -550,13 +580,19 @@ def _chat_completion(
 
 def enhance_decisions_with_llm(result: dict[str, Any], enabled: bool) -> dict[str, Any]:
     if not enabled:
-        return {"enabled": False, "status": "disabled", "enhanced_count": 0}
+        return {
+            "enabled": False,
+            "status": "disabled",
+            "enhanced_count": 0,
+            "fallback_reason": "用户未启用大模型解释增强。",
+        }
     if not (os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")):
         return {
             "enabled": True,
             "status": "not_configured",
             "enhanced_count": 0,
-            "message": "Set OPENAI_API_KEY or LLM_API_KEY to enable LLM reasoning.",
+            "message": "未配置 OPENAI_API_KEY 或 LLM_API_KEY，系统已使用本地策略理由。",
+            "fallback_reason": "missing_llm_api_key",
         }
 
     quotes = {item["symbol"]: item for item in result.get("quotes") or []}
@@ -581,8 +617,11 @@ def enhance_decisions_with_llm(result: dict[str, Any], enabled: bool) -> dict[st
                                 "action": decision.get("action"),
                                 "confidence": decision.get("confidence"),
                                 "rule_reason": decision.get("reason"),
+                                "signals": decision.get("signals"),
+                                "risk_note": decision.get("risk_note"),
                                 "price": quote.get("price"),
                                 "change_percent": quote.get("change_percent"),
+                                "hard_rule": "只允许改写解释，不允许改变 BUY/SELL/HOLD、置信度、仓位或风控约束。",
                             },
                             ensure_ascii=False,
                         ),
@@ -598,9 +637,17 @@ def enhance_decisions_with_llm(result: dict[str, Any], enabled: bool) -> dict[st
             errors.append(str(exc))
             break
 
+    total_candidates = min(len(result.get("decisions") or []), LLM_DECISION_LIMIT)
+    status = "ok" if enhanced_count == total_candidates and not errors else "partial" if enhanced_count else "error"
     return {
         "enabled": True,
-        "status": "ok" if enhanced_count else "error",
+        "status": status,
         "enhanced_count": enhanced_count,
         "errors": errors[:2],
+        "fallback_reason": None if not errors else "llm_request_failed",
+        "message": (
+            "大模型已增强部分或全部交易理由，动作和仓位仍由本地风控决定。"
+            if enhanced_count
+            else "大模型调用失败，系统已保留本地策略理由。"
+        ),
     }
