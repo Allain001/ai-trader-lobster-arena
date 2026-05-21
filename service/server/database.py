@@ -628,6 +628,26 @@ def init_database():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lobster_arena_backtests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            backtest_id TEXT UNIQUE NOT NULL,
+            symbols TEXT NOT NULL,
+            period TEXT NOT NULL,
+            initial_cash REAL NOT NULL,
+            fee_rate REAL NOT NULL,
+            max_position REAL NOT NULL,
+            use_llm INTEGER DEFAULT 0,
+            include_api_agent INTEGER DEFAULT 0,
+            status TEXT NOT NULL,
+            summary_json TEXT,
+            result_json TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            finished_at TEXT
+        )
+    """)
+
     cursor.execute("SELECT COALESCE(MAX(signal_id), 0) AS max_signal_id FROM signals")
     max_signal_id = int(cursor.fetchone()["max_signal_id"] or 0)
     cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_sequence_id FROM signal_sequence")
@@ -1437,6 +1457,11 @@ def init_database():
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_lobster_arena_runs_source_created
         ON lobster_arena_runs(source, created_at DESC)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_lobster_arena_backtests_created
+        ON lobster_arena_backtests(created_at DESC)
     """)
 
     cursor.execute("""

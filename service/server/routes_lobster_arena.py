@@ -6,10 +6,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from lobster_agent_runtime import (
+    get_lobster_backtest,
     get_lobster_autorun_status,
     get_lobster_run,
     get_lobster_system_status,
+    list_lobster_backtests,
     list_lobster_runs,
+    run_lobster_backtest_cycle,
     run_lobster_agent_cycle,
 )
 from lobster_arena import DEFAULT_SYMBOLS, LobsterArenaError, run_lobster_arena
@@ -23,6 +26,16 @@ class LobsterArenaRequest(BaseModel):
     use_llm: bool = False
     use_api_agent: bool = False
     publish_to_platform: bool = False
+
+
+class LobsterBacktestRequest(BaseModel):
+    symbols: list[str] = Field(default_factory=lambda: DEFAULT_SYMBOLS.copy())
+    period: str = Field(default="3mo")
+    initial_cash: float = Field(default=100000.0, gt=0, le=10000000)
+    fee_rate: float = Field(default=0.001, ge=0, le=0.05)
+    max_position: float = Field(default=0.3, gt=0, le=1)
+    use_llm: bool = False
+    use_api_agent: bool = True
 
 
 def register_lobster_arena_routes(app: FastAPI) -> None:
@@ -68,6 +81,32 @@ def register_lobster_arena_routes(app: FastAPI) -> None:
         if not run:
             raise HTTPException(status_code=404, detail="Lobster Arena run not found")
         return run
+
+    @app.post("/api/lobster-arena/backtest")
+    async def lobster_arena_backtest(payload: LobsterBacktestRequest):
+        try:
+            return run_lobster_backtest_cycle(
+                symbols=payload.symbols,
+                period=payload.period,
+                initial_cash=payload.initial_cash,
+                fee_rate=payload.fee_rate,
+                max_position=payload.max_position,
+                use_llm=payload.use_llm,
+                include_api_agent=payload.use_api_agent,
+            )
+        except LobsterArenaError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/api/lobster-arena/backtests")
+    async def lobster_arena_backtests(limit: int = 20):
+        return list_lobster_backtests(limit=limit)
+
+    @app.get("/api/lobster-arena/backtests/{backtest_id}")
+    async def lobster_arena_backtest_detail(backtest_id: str):
+        backtest = get_lobster_backtest(backtest_id)
+        if not backtest:
+            raise HTTPException(status_code=404, detail="Lobster Arena backtest not found")
+        return backtest
 
     @app.post("/api/lobster-arena/autorun/run-once")
     async def lobster_arena_autorun_once(payload: LobsterArenaRequest):

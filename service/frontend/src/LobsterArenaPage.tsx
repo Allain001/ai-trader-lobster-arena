@@ -211,6 +211,57 @@ type LobsterRunSummary = {
   }
 }
 
+type BacktestAgent = LeaderboardRow & {
+  final_value: number
+  return_pct: number
+  max_drawdown_pct: number
+  win_rate_pct: number
+  trade_count: number
+}
+
+type EquityCurvePoint = {
+  date: string
+  agents: Record<string, number>
+  best_value: number
+  average_value: number
+}
+
+type BacktestResult = ArenaResult & {
+  backtest_id: string
+  period: {
+    range: ChartRange
+    start: string
+    end: string
+    trading_days: number
+  }
+  symbols: string[]
+  final_value: number
+  return_pct: number
+  max_drawdown_pct: number
+  agents: BacktestAgent[]
+  equity_curve: EquityCurvePoint[]
+  trades: Trade[]
+  llm_recap?: string
+  data_sources?: Record<string, string>
+}
+
+type LobsterBacktestSummary = {
+  backtest_id: string
+  symbols: string[]
+  period: string
+  status: string
+  created_at: string
+  finished_at?: string
+  summary?: {
+    final_value?: number
+    return_pct?: number
+    max_drawdown_pct?: number
+    trade_count?: number
+    agent_count?: number
+    llm_status?: string
+  }
+}
+
 type ManualMarker = {
   symbol: string
   action: 'BUY' | 'SELL'
@@ -302,6 +353,21 @@ function formatPositions(positions: Record<string, number>) {
   const entries = Object.entries(positions)
   if (entries.length === 0) return '-'
   return entries.map(([symbol, shares]) => `${symbol}: ${shares}`).join(', ')
+}
+
+function buildEquityPath(points: EquityCurvePoint[], key: 'best_value' | 'average_value', width = 520, height = 130) {
+  if (points.length < 2) return ''
+  const values = points.map((point) => Number(point[key] || 0))
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const span = Math.max(1, max - min)
+  return values
+    .map((value, index) => {
+      const x = (index / (values.length - 1)) * width
+      const y = height - ((value - min) / span) * height
+      return `${x.toFixed(1)},${y.toFixed(1)}`
+    })
+    .join(' ')
 }
 
 function toDateKey(value: string) {
@@ -595,17 +661,23 @@ function ToggleButton({
 }
 
 export function LobsterArenaPage() {
+  const [mode, setMode] = useState<'live' | 'backtest'>('live')
   const [symbols, setSymbols] = useState(DEFAULT_SYMBOLS)
   const [initialCash, setInitialCash] = useState(100000)
   const [useApiAgent, setUseApiAgent] = useState(true)
   const [useLlm, setUseLlm] = useState(false)
   const [publishToPlatform, setPublishToPlatform] = useState(false)
+  const [backtestPeriod, setBacktestPeriod] = useState<ChartRange>('3mo')
   const [result, setResult] = useState<ArenaResult | null>(null)
+  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null)
   const [runHistory, setRunHistory] = useState<LobsterRunSummary[]>([])
+  const [backtestHistory, setBacktestHistory] = useState<LobsterBacktestSummary[]>([])
   const [systemStatus, setSystemStatus] = useState<LobsterSystemStatus | null>(null)
   const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null)
+  const [backtestLoadingId, setBacktestLoadingId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [dataTransferStatus, setDataTransferStatus] = useState<string | null>(null)
   const [watchlist, setWatchlist] = useState<WatchlistStock[]>([])
   const [watchlistLoading, setWatchlistLoading] = useState(true)
   const [selectedSymbol, setSelectedSymbol] = useState('NVDA')
@@ -624,8 +696,10 @@ export function LobsterArenaPage() {
   const [manualMarkers, setManualMarkers] = useState<ManualMarker[]>([])
   const [isCompact, setIsCompact] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth < 980))
   const candleRequestId = useRef(0)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
 
-  const trades = useMemo(() => result?.leaderboard.flatMap((row) => row.trades) || [], [result])
+  const activeArena = mode === 'backtest' ? backtestResult : result
+  const trades = useMemo(() => activeArena?.leaderboard.flatMap((row) => row.trades) || [], [activeArena])
   const selectedStock = useMemo(
     () => watchlist.find((item) => item.symbol === selectedSymbol),
     [selectedSymbol, watchlist]
@@ -640,15 +714,15 @@ export function LobsterArenaPage() {
     })
   }, [search, sector, watchlist])
   const selectedDecisions = useMemo(
-    () => (result?.decisions || []).filter((item) => item.symbol === selectedSymbol),
-    [result, selectedSymbol]
+    () => (activeArena?.decisions || []).filter((item) => item.symbol === selectedSymbol),
+    [activeArena, selectedSymbol]
   )
   const selectedTrades = useMemo(
     () => trades.filter((item) => item.symbol === selectedSymbol),
     [trades, selectedSymbol]
   )
-  const bestAgent = useMemo(() => result?.leaderboard[0], [result])
-  const activeSystemStatus = result?.system_status || systemStatus
+  const bestAgent = useMemo(() => activeArena?.leaderboard[0], [activeArena])
+  const activeSystemStatus = activeArena?.system_status || systemStatus
   const chartMarkers = useMemo(() => {
     const tradeMarkers = selectedTrades.map((trade) => ({
       time: toDateKey(trade.timestamp),
@@ -696,6 +770,18 @@ export function LobsterArenaPage() {
     }
   }
 
+  const loadBacktestHistory = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/lobster-arena/backtests?limit=8`)
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.detail || 'backtests_load_failed')
+      setBacktestHistory(payload.backtests || [])
+    } catch (err) {
+      console.error(err)
+      setBacktestHistory([])
+    }
+  }
+
   const loadSystemStatus = async () => {
     try {
       const response = await fetch(`${API_BASE}/lobster-arena/status`)
@@ -721,6 +807,24 @@ export function LobsterArenaPage() {
       setError(err?.message || '历史详情加载失败。')
     } finally {
       setHistoryLoadingId(null)
+    }
+  }
+
+  const loadBacktestDetail = async (backtestId: string) => {
+    setBacktestLoadingId(backtestId)
+    setError(null)
+    setMode('backtest')
+    try {
+      const response = await fetch(`${API_BASE}/lobster-arena/backtests/${encodeURIComponent(backtestId)}`)
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.detail || 'backtest_detail_failed')
+      if (payload.result) {
+        setBacktestResult(payload.result)
+      }
+    } catch (err: any) {
+      setError(err?.message || '历史回测详情加载失败。')
+    } finally {
+      setBacktestLoadingId(null)
     }
   }
 
@@ -772,7 +876,7 @@ export function LobsterArenaPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          symbols: symbols.split(',').map((symbol) => symbol.trim().toUpperCase()).filter(Boolean),
+          symbols: symbols.split(',').map((symbol) => symbol.trim().toUpperCase()).filter(Boolean).slice(0, 6),
           initial_cash: initialCash,
           fee_rate: 0.001,
           max_position: 0.3,
@@ -798,11 +902,85 @@ export function LobsterArenaPage() {
     }
   }
 
+  const runBacktest = async () => {
+    setLoading(true)
+    setError(null)
+    setMode('backtest')
+    try {
+      const response = await fetch(`${API_BASE}/lobster-arena/backtest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbols: symbols.split(',').map((symbol) => symbol.trim().toUpperCase()).filter(Boolean).slice(0, 6),
+          period: backtestPeriod,
+          initial_cash: initialCash,
+          fee_rate: 0.001,
+          max_position: 0.3,
+          use_api_agent: useApiAgent,
+          use_llm: useLlm
+        })
+      })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.detail || 'Failed to run backtest.')
+      setBacktestResult(payload)
+      if (payload.system_status) {
+        setSystemStatus(payload.system_status)
+      }
+      loadBacktestHistory()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to run backtest.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleExportDemo = async () => {
+    setDataTransferStatus(null)
+    try {
+      const response = await fetch(`${API_BASE}/demo/export`)
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.detail || '导出失败')
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `ai-trader-demo-${new Date().toISOString().slice(0, 10)}.json`
+      link.click()
+      URL.revokeObjectURL(url)
+      setDataTransferStatus('演示数据已导出。')
+    } catch (err: any) {
+      setDataTransferStatus(err?.message || '演示数据导出失败。')
+    }
+  }
+
+  const handleImportDemo = async (file?: File) => {
+    if (!file) return
+    setDataTransferStatus(null)
+    try {
+      const payload = JSON.parse(await file.text())
+      const response = await fetch(`${API_BASE}/demo/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      const resultPayload = await response.json()
+      if (!response.ok) throw new Error(resultPayload.detail || '导入失败')
+      setDataTransferStatus('演示数据已导入，历史记录和持仓已恢复。')
+      loadRunHistory()
+      loadBacktestHistory()
+      loadSystemStatus()
+    } catch (err: any) {
+      setDataTransferStatus(err?.message || '演示数据导入失败。')
+    } finally {
+      if (importInputRef.current) importInputRef.current.value = ''
+    }
+  }
+
   useEffect(() => {
     loadWatchlist()
     loadRunHistory()
+    loadBacktestHistory()
     loadSystemStatus()
-    runArena()
   }, [])
 
   useEffect(() => {
@@ -864,39 +1042,65 @@ export function LobsterArenaPage() {
           <p className="page-subtitle" style={{ maxWidth: 780, color: '#94a3b8' }}>
             50 只美股股票池，点击任意股票查看专业 K 线。AI 智能体与人类用户在同一行情和虚拟资金规则下模拟交易，真实券商接口仅预留，不会实际下单。
           </p>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+            <ToggleButton active={mode === 'live'} onClick={() => setMode('live')}>实时模拟</ToggleButton>
+            <ToggleButton active={mode === 'backtest'} onClick={() => setMode('backtest')}>历史回测</ToggleButton>
+          </div>
         </div>
-        <button className="btn btn-primary" type="button" onClick={runArena} disabled={loading}>
-          {loading ? 'AI 正在模拟...' : '运行 AI 模拟交易'}
-        </button>
+        <div style={{ display: 'grid', gap: 8, minWidth: 210 }}>
+          <button className="btn btn-primary" type="button" onClick={mode === 'backtest' ? runBacktest : runArena} disabled={loading}>
+            {loading ? 'AI 正在运行...' : mode === 'backtest' ? '运行历史回测' : '运行 AI 模拟交易'}
+          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-secondary" type="button" onClick={handleExportDemo}>导出演示数据</button>
+            <button className="btn btn-secondary" type="button" onClick={() => importInputRef.current?.click()}>导入</button>
+          </div>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            style={{ display: 'none' }}
+            onChange={(event) => handleImportDemo(event.target.files?.[0])}
+          />
+        </div>
       </div>
+      {dataTransferStatus && (
+        <div style={{ ...panelStyle, padding: 10, marginBottom: 12, color: dataTransferStatus.includes('失败') ? '#ef4444' : '#fbbf24', fontSize: 13, fontWeight: 800 }}>
+          {dataTransferStatus}
+        </div>
+      )}
 
       <section style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : 'repeat(6, minmax(0, 1fr))', gap: 12, marginBottom: 12 }}>
         <div style={{ ...panelStyle, padding: 14 }}>
           <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>最近运行</div>
-          <div style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 900, marginTop: 6 }}>{result?.run_id || runHistory[0]?.run_id || '-'}</div>
+          <div style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 900, marginTop: 6 }}>
+            {mode === 'backtest' ? backtestResult?.backtest_id || backtestHistory[0]?.backtest_id || '-' : result?.run_id || runHistory[0]?.run_id || '-'}
+          </div>
         </div>
         <div style={{ ...panelStyle, padding: 14 }}>
           <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>券商模式</div>
           <div style={{ color: '#22c55e', fontSize: 14, fontWeight: 900, marginTop: 6 }}>
-            {result?.broker_status?.mode === 'paper' ? '模拟交易，真实下单关闭' : '等待运行'}
+            {activeArena?.broker_status?.mode === 'paper' ? '模拟交易，真实下单关闭' : '等待运行'}
           </div>
         </div>
         <div style={{ ...panelStyle, padding: 14 }}>
           <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>本轮交易</div>
           <div style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 900, marginTop: 6 }}>
-            {result?.risk_summary ? `${result.risk_summary.trade_count} 笔 / 买 ${result.risk_summary.buy_count} / 卖 ${result.risk_summary.sell_count}` : '-'}
+            {mode === 'backtest' && backtestResult
+              ? `${backtestResult.trades.length} 笔 / ${backtestResult.period.trading_days} 天`
+              : result?.risk_summary ? `${result.risk_summary.trade_count} 笔 / 买 ${result.risk_summary.buy_count} / 卖 ${result.risk_summary.sell_count}` : '-'}
           </div>
         </div>
         <div style={{ ...panelStyle, padding: 14 }}>
           <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>历史记录</div>
           <div style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 900, marginTop: 6 }}>
-            已保存 {runHistory.length} 次运行
+            实时 {runHistory.length} / 回测 {backtestHistory.length}
           </div>
         </div>
         <div style={{ ...panelStyle, padding: 14 }}>
           <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>LLM 状态</div>
-          <div style={{ color: result?.llm?.status === 'error' ? '#f59e0b' : '#e2e8f0', fontSize: 14, fontWeight: 900, marginTop: 6 }}>
-            {llmStatusLabel(result?.llm?.status)}
+          <div style={{ color: activeArena?.llm?.status === 'error' ? '#f59e0b' : '#e2e8f0', fontSize: 14, fontWeight: 900, marginTop: 6 }}>
+            {llmStatusLabel(activeArena?.llm?.status)}
           </div>
         </div>
         <div style={{ ...panelStyle, padding: 14 }}>
@@ -1202,7 +1406,7 @@ export function LobsterArenaPage() {
       </div>
 
       <section style={{ ...panelStyle, marginTop: 12, padding: 14 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : 'minmax(260px, 1fr) 170px 130px', gap: 12, alignItems: 'end' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : 'minmax(260px, 1fr) 170px 180px 150px', gap: 12, alignItems: 'end' }}>
           <label className="form-group" style={{ marginBottom: 0 }}>
             <span className="form-label">参赛股票代码</span>
             <input className="form-input" value={symbols} onChange={(event) => setSymbols(event.target.value)} />
@@ -1211,8 +1415,16 @@ export function LobsterArenaPage() {
             <span className="form-label">初始虚拟资金</span>
             <input className="form-input" type="number" min={1000} value={initialCash} onChange={(event) => setInitialCash(Number(event.target.value))} />
           </label>
-          <button className="btn btn-secondary" type="button" onClick={runArena} disabled={loading}>
-            刷新决策
+          <label className="form-group" style={{ marginBottom: 0 }}>
+            <span className="form-label">回测周期</span>
+            <select className="form-input" value={backtestPeriod} onChange={(event) => setBacktestPeriod(event.target.value as ChartRange)}>
+              {RANGE_OPTIONS.map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+          </label>
+          <button className="btn btn-secondary" type="button" onClick={mode === 'backtest' ? runBacktest : runArena} disabled={loading}>
+            {mode === 'backtest' ? '开始回测' : '刷新决策'}
           </button>
         </div>
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 14 }}>
@@ -1232,11 +1444,99 @@ export function LobsterArenaPage() {
         <div style={{ marginTop: 12, color: '#94a3b8', fontSize: 12, lineHeight: 1.7 }}>
           {activeSystemStatus?.database?.persistence_note || '当前保留 SQLite 低成本部署方案。'}
           {' '}LLM 只增强中文解释，不改动作、仓位和风控；真实下单始终关闭。
+          {' '}临时 SQLite 在线重启后可能清空，演示前可用“导出演示数据”保存，必要时再导入恢复。
         </div>
         {error && <div style={{ marginTop: 14, color: '#ef4444', fontWeight: 800 }}>{error}</div>}
       </section>
 
-      {result && (
+      {backtestResult && mode === 'backtest' && (
+        <section style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : 'minmax(420px, 1.15fr) minmax(320px, 0.85fr)', gap: 12, marginTop: 12 }}>
+          <div style={{ ...panelStyle, padding: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 17, fontWeight: 950 }}>历史回测资产曲线</div>
+                <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 4 }}>
+                  {backtestResult.period.start} 至 {backtestResult.period.end} / {backtestResult.period.trading_days} 个交易日
+                </div>
+              </div>
+              <div style={{ textAlign: isCompact ? 'left' : 'right' }}>
+                <div style={{ color: backtestResult.return_pct >= 0 ? '#22c55e' : '#ef4444', fontSize: 22, fontWeight: 950 }}>
+                  {formatSignedPercent(backtestResult.return_pct)}
+                </div>
+                <div style={{ color: '#94a3b8', fontSize: 12 }}>最佳智能体收益</div>
+              </div>
+            </div>
+            <svg viewBox="0 0 520 150" role="img" style={{ width: '100%', height: 180, display: 'block', background: '#050a0f', borderRadius: 8 }}>
+              <polyline points={buildEquityPath(backtestResult.equity_curve, 'average_value')} fill="none" stroke="rgba(148,163,184,0.55)" strokeWidth="2" />
+              <polyline points={buildEquityPath(backtestResult.equity_curve, 'best_value')} fill="none" stroke="#fbbf24" strokeWidth="3" />
+            </svg>
+            <div style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr 1fr' : 'repeat(4, 1fr)', gap: 8, marginTop: 12 }}>
+              {[
+                ['最终资产', formatMoney(backtestResult.final_value)],
+                ['最大回撤', `${backtestResult.max_drawdown_pct.toFixed(2)}%`],
+                ['成交笔数', `${backtestResult.trades.length}`],
+                ['股票数量', `${backtestResult.symbols.length}`]
+              ].map(([label, value]) => (
+                <div key={label} style={{ background: '#0a141d', border: '1px solid rgba(148, 163, 184, 0.12)', borderRadius: 8, padding: 10 }}>
+                  <div style={{ color: '#64748b', fontSize: 11, fontWeight: 800 }}>{label}</div>
+                  <div style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 900, marginTop: 5 }}>{value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: 12 }}>
+            <section style={{ ...panelStyle, padding: 14 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>LLM / 本地复盘</div>
+              <div style={{ color: '#cbd5e1', fontSize: 13, lineHeight: 1.8 }}>
+                {backtestResult.llm_recap || '回测完成后这里会生成整轮中文复盘。'}
+              </div>
+              <div style={{ color: '#64748b', fontSize: 12, marginTop: 10 }}>
+                状态：{llmStatusLabel(backtestResult.llm?.status)}{backtestResult.llm?.fallback_reason ? ` / ${backtestResult.llm.fallback_reason}` : ''}
+              </div>
+            </section>
+
+            <section style={{ ...panelStyle, padding: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 12 }}>
+                <div style={{ fontSize: 16, fontWeight: 900 }}>回测历史</div>
+                <button className="btn btn-secondary" type="button" onClick={loadBacktestHistory}>刷新</button>
+              </div>
+              <div style={{ display: 'grid', gap: 8, maxHeight: 250, overflowY: 'auto' }}>
+                {backtestHistory.length === 0 ? (
+                  <div style={{ color: '#94a3b8', fontSize: 13 }}>暂无回测记录。</div>
+                ) : (
+                  backtestHistory.map((item) => (
+                    <button
+                      key={item.backtest_id}
+                      type="button"
+                      onClick={() => loadBacktestDetail(item.backtest_id)}
+                      style={{
+                        border: '1px solid rgba(148, 163, 184, 0.14)',
+                        background: backtestResult.backtest_id === item.backtest_id ? 'rgba(217,169,79,0.16)' : '#0a141d',
+                        color: '#e5edf6',
+                        borderRadius: 8,
+                        padding: 10,
+                        textAlign: 'left',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        <strong style={{ fontSize: 12 }}>{item.backtest_id}</strong>
+                        <span style={{ color: '#94a3b8', fontSize: 12 }}>{backtestLoadingId === item.backtest_id ? '加载中' : item.status}</span>
+                      </div>
+                      <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 5 }}>
+                        {formatShortDate(item.created_at)} / {item.period} / {formatSignedPercent(item.summary?.return_pct || 0)}
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        </section>
+      )}
+
+      {activeArena && (
         <>
         <section style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : 'minmax(420px, 1fr) minmax(420px, 1fr)', gap: 12, marginTop: 12 }}>
           <div style={panelStyle}>
@@ -1253,7 +1553,7 @@ export function LobsterArenaPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {result.leaderboard.map((row, index) => (
+                  {activeArena.leaderboard.map((row, index) => (
                     <tr key={row.agent}>
                       <td>{index + 1}</td>
                       <td>{row.agent}</td>
@@ -1307,7 +1607,7 @@ export function LobsterArenaPage() {
           <div style={panelStyle}>
             <div style={{ padding: 14, borderBottom: '1px solid rgba(148, 163, 184, 0.13)', fontWeight: 900 }}>智能体复盘</div>
             <div style={{ display: 'grid', gap: 10, padding: 14 }}>
-              {(result.agent_reports || []).map((report) => (
+              {(activeArena.agent_reports || []).map((report) => (
                 <div key={report.agent} style={{ border: '1px solid rgba(148, 163, 184, 0.14)', borderRadius: 8, padding: 12, background: '#0a141d' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <div>
@@ -1336,10 +1636,10 @@ export function LobsterArenaPage() {
               <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>风控与系统状态</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
                 {[
-                  ['API 智能体', result.api_agent?.status || '-'],
-                  ['同步发布', result.published?.enabled ? `${result.published.published_trades || 0} 笔 / ${result.published.created_posts || 0} 帖` : '关闭'],
-                  ['最大暴露', result.risk_summary ? `${Math.round(result.risk_summary.max_single_symbol_exposure * 100)}% / ${Math.round(result.risk_summary.max_position_limit * 100)}%` : '-'],
-                  ['LLM 回退', result.llm?.fallback_reason || '无']
+                  ['API 智能体', activeArena.api_agent?.status || '-'],
+                  ['同步发布', activeArena.published?.enabled ? `${activeArena.published.published_trades || 0} 笔 / ${activeArena.published.created_posts || 0} 帖` : mode === 'backtest' ? '回测不发布' : '关闭'],
+                  ['最大暴露', activeArena.risk_summary ? `${Math.round(activeArena.risk_summary.max_single_symbol_exposure * 100)}% / ${Math.round(activeArena.risk_summary.max_position_limit * 100)}%` : `上限 ${Math.round(activeArena.max_position * 100)}%`],
+                  ['LLM 回退', activeArena.llm?.fallback_reason || '无']
                 ].map(([label, value]) => (
                   <div key={label} style={{ border: '1px solid rgba(148, 163, 184, 0.12)', borderRadius: 8, padding: 10, background: '#0a141d' }}>
                     <div style={{ color: '#64748b', fontSize: 11, fontWeight: 800 }}>{label}</div>
@@ -1348,7 +1648,7 @@ export function LobsterArenaPage() {
                 ))}
               </div>
               <div style={{ display: 'grid', gap: 9 }}>
-                {(result.risk_events || []).map((event, index) => (
+                {(activeArena.risk_events || []).map((event, index) => (
                   <div key={`${event.code || event.message}-${index}`} style={{ display: 'grid', gridTemplateColumns: '10px minmax(0, 1fr)', gap: 9, alignItems: 'start' }}>
                     <span style={{ width: 9, height: 9, borderRadius: 99, background: severityColor(event.severity), marginTop: 5 }} />
                     <span style={{ color: '#a7b4c5', fontSize: 13, lineHeight: 1.6 }}>
@@ -1358,9 +1658,9 @@ export function LobsterArenaPage() {
                 ))}
               </div>
               <div style={{ borderTop: '1px solid rgba(148, 163, 184, 0.13)', marginTop: 12, paddingTop: 12, color: '#94a3b8', fontSize: 12, lineHeight: 1.7 }}>
-                {result.broker_status?.message || '模拟交易模式，真实下单关闭。'}<br />
-                {result.llm?.message || llmStatusLabel(result.llm?.status)}
-                {result.llm?.errors?.length ? <><br />{result.llm.errors[0]}</> : null}
+                {activeArena.broker_status?.message || '模拟交易模式，真实下单关闭。'}<br />
+                {activeArena.llm?.message || llmStatusLabel(activeArena.llm?.status)}
+                {activeArena.llm?.errors?.length ? <><br />{activeArena.llm.errors[0]}</> : null}
               </div>
             </section>
 
@@ -1380,7 +1680,7 @@ export function LobsterArenaPage() {
                       onClick={() => loadRunDetail(run.run_id)}
                       style={{
                         border: '1px solid rgba(148, 163, 184, 0.14)',
-                        background: result.run_id === run.run_id ? 'rgba(217,169,79,0.16)' : '#0a141d',
+                        background: result?.run_id === run.run_id ? 'rgba(217,169,79,0.16)' : '#0a141d',
                         color: '#e5edf6',
                         borderRadius: 8,
                         padding: 10,

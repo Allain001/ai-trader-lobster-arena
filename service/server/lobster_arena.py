@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from market_candles import get_market_candles
+
 
 CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 DEFAULT_SYMBOLS = ["NVDA", "AAPL", "TSLA", "MSFT", "SPY"]
@@ -711,4 +713,247 @@ def run_lobster_arena(
     }
     result["agent_reports"] = build_agent_reports(result)
     result["risk_events"] = [*risk_events, *build_risk_events(result)]
+    return result
+
+
+def _quote_from_candle(symbol: str, candle: dict[str, Any], previous_close: float | None, source: str) -> Quote:
+    close = float(candle["close"])
+    change_percent = ((close - previous_close) / previous_close * 100) if previous_close else 0.0
+    return Quote(
+        symbol=symbol,
+        price=close,
+        change_percent=change_percent,
+        market_time=f"{candle['time']}T21:00:00Z",
+        currency="USD",
+        source=source,
+    )
+
+
+def _max_drawdown(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    peak = values[0]
+    worst = 0.0
+    for value in values:
+        peak = max(peak, value)
+        if peak:
+            worst = min(worst, (value - peak) / peak)
+    return abs(worst) * 100
+
+
+def _trade_win_rate(trades: list[dict[str, Any]]) -> float:
+    average_cost: dict[str, float] = {}
+    quantity: dict[str, int] = {}
+    wins = 0
+    sells = 0
+    for trade in trades:
+        symbol = str(trade.get("symbol") or "")
+        shares = int(trade.get("shares") or 0)
+        price = float(trade.get("price") or 0)
+        if not symbol or shares <= 0 or price <= 0:
+            continue
+        if trade.get("action") == "BUY":
+            old_qty = quantity.get(symbol, 0)
+            old_cost = average_cost.get(symbol, 0.0)
+            new_qty = old_qty + shares
+            average_cost[symbol] = ((old_cost * old_qty) + (price * shares)) / new_qty
+            quantity[symbol] = new_qty
+            continue
+        if trade.get("action") == "SELL":
+            sells += 1
+            if price > average_cost.get(symbol, price):
+                wins += 1
+            quantity[symbol] = max(0, quantity.get(symbol, 0) - shares)
+    return (wins / sells * 100) if sells else 0.0
+
+
+def _backtest_agent_builders(
+    quotes: dict[str, Quote],
+    history: dict[str, list[float]],
+    max_position: float,
+    include_api_agent: bool,
+) -> list[tuple[str, Callable[[PaperPortfolio], list[Decision]], dict[str, Any] | None]]:
+    builders: list[tuple[str, Callable[[PaperPortfolio], list[Decision]], dict[str, Any] | None]] = [
+        (LOBSTER_AGENT_NAME, lambda p: _lobster_decisions(quotes, history, p), None),
+        (MA_AGENT_NAME, lambda p: _ma_decisions(quotes, history, p), None),
+        (CONSERVATIVE_AGENT_NAME, lambda p: _conservative_decisions(quotes, history), None),
+        (CONTRARIAN_AGENT_NAME, lambda p: _contrarian_decisions(quotes, history, p), None),
+        (RANDOM_AGENT_NAME, lambda p: _random_decisions(quotes, history, p), None),
+    ]
+    if include_api_agent:
+        builders.append(
+            (
+                API_AGENT_NAME,
+                lambda p: _api_agent_decisions(quotes, history, p, max_position)[0],
+                {
+                    "enabled": True,
+                    "status": "local_strategy",
+                    "decision_count": 0,
+                    "agent_name": API_AGENT_NAME,
+                    "llm_decision_permission": "disabled",
+                },
+            )
+        )
+    return builders
+
+
+def run_lobster_backtest(
+    symbols: list[str] | None = None,
+    period: str = "3mo",
+    initial_cash: float = 100000.0,
+    fee_rate: float = 0.001,
+    max_position: float = 0.3,
+    include_api_agent: bool = False,
+) -> dict[str, Any]:
+    normalized_symbols = [symbol.strip().upper() for symbol in (symbols or DEFAULT_SYMBOLS) if symbol.strip()]
+    if not normalized_symbols:
+        raise LobsterArenaError("At least one stock symbol is required.")
+    if period not in {"1mo", "3mo", "6mo", "1y"}:
+        period = "3mo"
+
+    candles_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    source_by_symbol: dict[str, str] = {}
+    for symbol in normalized_symbols:
+        try:
+            payload = get_market_candles(symbol, range_=period, interval="1d")
+        except Exception as exc:
+            raise LobsterArenaError(f"Failed to load candles for {symbol}: {exc}") from exc
+        candles = [item for item in payload.get("candles") or [] if item.get("time") and item.get("close")]
+        if len(candles) < 10:
+            raise LobsterArenaError(f"Not enough candle data for {symbol}")
+        candles_by_symbol[symbol] = candles
+        source_by_symbol[symbol] = str(payload.get("source") or "unknown")
+
+    common_dates = sorted(set.intersection(*[{str(item["time"]) for item in candles} for candles in candles_by_symbol.values()]))
+    if len(common_dates) < 10:
+        raise LobsterArenaError("Not enough overlapping trading dates for the selected symbols.")
+
+    candle_lookup = {
+        symbol: {str(item["time"]): item for item in candles}
+        for symbol, candles in candles_by_symbol.items()
+    }
+    date_index = {date: index for index, date in enumerate(common_dates)}
+    portfolios = {
+        name: PaperPortfolio(agent=name, cash=initial_cash)
+        for name in get_agent_profiles(include_api_agent=include_api_agent)
+    }
+    equity_by_agent: dict[str, list[float]] = {name: [] for name in portfolios}
+    decisions_payload: list[dict[str, Any]] = []
+    risk_events: list[dict[str, Any]] = []
+    api_agent_status: dict[str, Any] = {"enabled": include_api_agent, "status": "local_strategy" if include_api_agent else "disabled", "decision_count": 0}
+
+    for date in common_dates:
+        quotes: dict[str, Quote] = {}
+        history: dict[str, list[float]] = {}
+        current_index = date_index[date]
+        for symbol in normalized_symbols:
+            current_candle = candle_lookup[symbol][date]
+            previous_close = None
+            if current_index > 0:
+                previous = candle_lookup[symbol].get(common_dates[current_index - 1])
+                previous_close = float(previous["close"]) if previous else None
+            quotes[symbol] = _quote_from_candle(symbol, current_candle, previous_close, source_by_symbol[symbol])
+            history[symbol] = [
+                float(candle_lookup[symbol][past_date]["close"])
+                for past_date in common_dates[: current_index + 1]
+                if past_date in candle_lookup[symbol]
+            ]
+
+        for agent_name, build_decisions, api_status in _backtest_agent_builders(quotes, history, max_position, include_api_agent):
+            portfolio = portfolios[agent_name]
+            decisions = build_decisions(portfolio)
+            if api_status:
+                api_agent_status.update(api_status)
+                api_agent_status["decision_count"] = int(api_agent_status.get("decision_count") or 0) + len(decisions)
+            for decision in decisions:
+                trade_count_before = len(portfolio.trades)
+                event = portfolio.execute(decision, quotes, max_position=max_position, fee_rate=fee_rate)
+                if len(portfolio.trades) > trade_count_before:
+                    portfolio.trades[-1]["timestamp"] = f"{date}T21:00:00Z"
+                if event and len(risk_events) < 120:
+                    risk_events.append({**event, "date": date})
+                payload = _decision_payload(decision)
+                payload["date"] = date
+                decisions_payload.append(payload)
+            equity_by_agent[agent_name].append(round(portfolio.total_value(quotes), 2))
+
+    final_quotes = {
+        symbol: _quote_from_candle(
+            symbol,
+            candle_lookup[symbol][common_dates[-1]],
+            float(candle_lookup[symbol][common_dates[-2]]["close"]) if len(common_dates) > 1 else None,
+            source_by_symbol[symbol],
+        )
+        for symbol in normalized_symbols
+    }
+
+    agents: list[dict[str, Any]] = []
+    for agent_name, portfolio in portfolios.items():
+        final_value = portfolio.total_value(final_quotes)
+        profit = final_value - initial_cash
+        values = equity_by_agent[agent_name]
+        agents.append(
+            {
+                "agent": agent_name,
+                "cash": round(portfolio.cash, 2),
+                "final_value": round(final_value, 2),
+                "total_value": round(final_value, 2),
+                "profit": round(profit, 2),
+                "return_pct": round((profit / initial_cash) * 100 if initial_cash else 0.0, 2),
+                "return_percent": round((profit / initial_cash) * 100 if initial_cash else 0.0, 2),
+                "max_drawdown_pct": round(_max_drawdown(values), 2),
+                "win_rate_pct": round(_trade_win_rate(portfolio.trades), 2),
+                "trade_count": len(portfolio.trades),
+                "positions": dict(sorted(portfolio.positions.items())),
+                "trades": portfolio.trades,
+            }
+        )
+    agents.sort(key=lambda item: item["final_value"], reverse=True)
+
+    equity_curve = [
+        {
+            "date": date,
+            "agents": {agent_name: equity_by_agent[agent_name][index] for agent_name in equity_by_agent},
+            "best_value": max(equity_by_agent[agent_name][index] for agent_name in equity_by_agent),
+            "average_value": round(sum(equity_by_agent[agent_name][index] for agent_name in equity_by_agent) / len(equity_by_agent), 2),
+        }
+        for index, date in enumerate(common_dates)
+    ]
+    trades = [trade for row in agents for trade in row["trades"]]
+    result = {
+        "period": {
+            "range": period,
+            "start": common_dates[0],
+            "end": common_dates[-1],
+            "trading_days": len(common_dates),
+        },
+        "symbols": normalized_symbols,
+        "initial_cash": initial_cash,
+        "fee_rate": fee_rate,
+        "max_position": max_position,
+        "final_value": agents[0]["final_value"] if agents else initial_cash,
+        "return_pct": agents[0]["return_pct"] if agents else 0.0,
+        "max_drawdown_pct": agents[0]["max_drawdown_pct"] if agents else 0.0,
+        "agents": agents,
+        "leaderboard": agents,
+        "equity_curve": equity_curve,
+        "trades": trades,
+        "decisions": decisions_payload[-500:],
+        "quotes": [quote.__dict__ for quote in final_quotes.values()],
+        "agent_profiles": get_agent_profiles(include_api_agent=include_api_agent),
+        "api_agent": api_agent_status,
+        "risk_events": risk_events,
+        "data_sources": source_by_symbol,
+        "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    if any(source != "yahoo" for source in source_by_symbol.values()):
+        result["risk_events"].append(
+            {
+                "severity": "warning",
+                "code": "fallback_backtest_data",
+                "message": "部分回测 K 线使用本地兜底数据，适合演示流程，不代表真实市场表现。",
+            }
+        )
+    result["agent_reports"] = build_agent_reports(result)
+    result["risk_events"] = [*result["risk_events"], *build_risk_events(result)]
     return result

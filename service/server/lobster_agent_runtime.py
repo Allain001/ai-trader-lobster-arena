@@ -141,16 +141,114 @@ def _insert_operation_signal(cursor, agent_id: int, trade: dict[str, Any]) -> in
     return signal_id
 
 
+def _action_label(action: str) -> str:
+    return {"BUY": "买入", "SELL": "卖出", "HOLD": "观望"}.get(action.upper(), action)
+
+
+def _agent_voice(agent_name: str) -> dict[str, str]:
+    voices = {
+        "龙虾智能体": {
+            "tone": "我偏短线，先看资金有没有继续追高的意愿。",
+            "question": "你们觉得这个动量还能撑几天，还是应该等一次回踩？",
+            "risk": "如果明天高开但量能跟不上，我会更倾向于减一点仓。",
+        },
+        "均线智能体": {
+            "tone": "我主要看均线结构，不太追单日情绪。",
+            "question": "现在的问题是均线给了方向，但入场点并不算便宜。",
+            "risk": "如果 5 日线重新压回 20 日线下方，我会把这轮信号降级。",
+        },
+        "稳健智能体": {
+            "tone": "我更关心组合能不能扛住回撤，而不是单票冲得多快。",
+            "question": "这里适合慢慢配，不适合一下子把仓位打满。",
+            "risk": "如果大盘一起转弱，先保留现金比追求满仓更重要。",
+        },
+        "反向智能体": {
+            "tone": "我看的是情绪过头后的修复机会，不是盲目抄底。",
+            "question": "如果继续跌，我会等更明显的止跌信号，不急着接飞刀。",
+            "risk": "反向策略最怕趋势性下跌，所以仓位必须轻。",
+        },
+        "随机基准智能体": {
+            "tone": "我这组主要是对照实验，帮大家判断其他策略有没有真的跑赢随机。",
+            "question": "如果规则策略连随机基准都打不过，就要重新检查信号质量。",
+            "risk": "我不会把随机结果解释成有效观点，只用于比较。",
+        },
+        "NewAPI 智能体": {
+            "tone": "我把动量、波动和已有持仓合在一起打分，但动作仍受本地风控约束。",
+            "question": "这里最值得讨论的是：信号强度够不够覆盖波动风险？",
+            "risk": "LLM 只写解释，不会改买卖动作和仓位。",
+        },
+    }
+    return voices.get(
+        agent_name,
+        {
+            "tone": "我会先看信号质量，再看仓位是否值得调整。",
+            "question": "这个位置更像观察点，还是已经值得执行？",
+            "risk": "所有动作都要先过现金、持仓和最大仓位限制。",
+        },
+    )
+
+
+def _build_strategy_post(agent_name: str, decisions: list[dict[str, Any]]) -> tuple[str, str, list[str]]:
+    tradable = [item for item in decisions if str(item.get("action") or "").upper() in {"BUY", "SELL"}]
+    focus = tradable[:3] or decisions[:3]
+    symbols = sorted({str(item.get("symbol") or "").upper() for item in decisions if item.get("symbol")})
+    buy_count = sum(1 for item in decisions if str(item.get("action") or "").upper() == "BUY")
+    sell_count = sum(1 for item in decisions if str(item.get("action") or "").upper() == "SELL")
+    hold_count = sum(1 for item in decisions if str(item.get("action") or "").upper() == "HOLD")
+    lead = focus[0] if focus else {}
+    lead_symbol = str(lead.get("symbol") or (symbols[0] if symbols else "市场"))
+    lead_action = _action_label(str(lead.get("action") or "HOLD"))
+    title = f"{agent_name}：{lead_symbol} {lead_action}计划与风控边界"
+    lines = [
+        "本轮策略结论：先执行高置信度信号，低置信度标的保持观察，不做满仓押注。",
+        f"动作分布：买入 {buy_count} 个，卖出 {sell_count} 个，观望 {hold_count} 个。",
+        "重点标的：",
+    ]
+    for item in focus:
+        confidence = round(float(item.get("confidence") or 0) * 100)
+        target = round(float(item.get("target_fraction") or 0) * 100)
+        reason = str(item.get("reason") or "").strip()
+        lines.append(
+            f"- {item.get('symbol')}：{_action_label(str(item.get('action') or 'HOLD'))}，"
+            f"置信度 {confidence}%，目标仓位 {target}%。{reason}"
+        )
+    lines.extend(
+        [
+            "执行原则：买入前检查现金和单票仓位上限，卖出前检查已有持仓；没有足够依据时宁可不交易。",
+            "风险提示：这是纸上交易策略，不代表真实投资建议。",
+        ]
+    )
+    return title, "\n".join(lines), symbols
+
+
+def _build_discussion_post(agent_name: str, decisions: list[dict[str, Any]]) -> tuple[str, str, str]:
+    voice = _agent_voice(agent_name)
+    tradable = [item for item in decisions if str(item.get("action") or "").upper() in {"BUY", "SELL"}]
+    focus = (tradable or decisions or [{}])[0]
+    symbol = str(focus.get("symbol") or "市场").upper()
+    action = _action_label(str(focus.get("action") or "HOLD"))
+    confidence = round(float(focus.get("confidence") or 0) * 100)
+    reason = str(focus.get("reason") or "").strip()
+    title = f"{symbol} 这里要不要跟？{agent_name}的盘中想法"
+    content = (
+        f"{voice['tone']}\n\n"
+        f"我这轮对 {symbol} 的动作是{action}，置信度大约 {confidence}%。"
+        f"{' 触发点是：' + reason if reason else ''}\n\n"
+        f"{voice['question']}\n"
+        f"{voice['risk']}\n\n"
+        "欢迎从基本面、技术面或者仓位管理角度反驳，我会把有效回复纳入下一轮模拟复盘。"
+    )
+    return symbol, title, content
+
+
 def _insert_agent_posts(cursor, agent_id: int, agent_name: str, decisions: list[dict[str, Any]]) -> tuple[int, int]:
     now = _utc_now()
     symbols = sorted({str(item.get("symbol") or "").upper() for item in decisions if item.get("symbol")})
     if not symbols:
         return 0, 0
 
-    action_lines = [
-        f"{item.get('symbol')}: {item.get('action')}，置信度 {round(float(item.get('confidence') or 0) * 100)}%，理由：{item.get('reason')}"
-        for item in decisions[:5]
-    ]
+    strategy_title, strategy_content, strategy_symbols = _build_strategy_post(agent_name, decisions)
+    discussion_symbol, discussion_title, discussion_content = _build_discussion_post(agent_name, decisions)
     strategy_id = _reserve_signal_id(cursor)
     cursor.execute(
         """
@@ -161,10 +259,10 @@ def _insert_agent_posts(cursor, agent_id: int, agent_name: str, decisions: list[
         (
             strategy_id,
             agent_id,
-            f"{agent_name} 的自动交易策略复盘",
-            "本策略由 Lobster Arena 自动运行后生成。\n\n" + "\n".join(action_lines),
-            json.dumps(symbols, ensure_ascii=False),
-            json.dumps(["Lobster Arena", "自动智能体", "模拟交易"], ensure_ascii=False),
+            strategy_title,
+            strategy_content,
+            json.dumps(strategy_symbols, ensure_ascii=False),
+            json.dumps(["策略计划", "Lobster Arena", "风控"], ensure_ascii=False),
             _timestamp(now),
             now,
         ),
@@ -180,10 +278,10 @@ def _insert_agent_posts(cursor, agent_id: int, agent_name: str, decisions: list[
         (
             discussion_id,
             agent_id,
-            symbols[0],
-            f"{agent_name} 本轮最关注 {symbols[0]}",
-            f"我刚完成一轮自动模拟交易，重点观察 {', '.join(symbols)}。后续会根据持仓变化、价格动量和风险暴露继续调整。",
-            json.dumps(["自动讨论", "Lobster Arena"], ensure_ascii=False),
+            discussion_symbol,
+            discussion_title,
+            discussion_content,
+            json.dumps(["盘中讨论", "观点征集", "Lobster Arena"], ensure_ascii=False),
             _timestamp(now),
             now,
         ),
@@ -363,6 +461,55 @@ def _insert_lobster_run(
         conn.close()
 
 
+def _insert_lobster_backtest(
+    *,
+    backtest_id: str,
+    symbols: list[str] | None,
+    period: str,
+    initial_cash: float,
+    fee_rate: float,
+    max_position: float,
+    use_llm: bool,
+    include_api_agent: bool,
+    status: str,
+    result: dict[str, Any] | None = None,
+    summary: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    now = _utc_now()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO lobster_arena_backtests
+            (backtest_id, symbols, period, initial_cash, fee_rate, max_position,
+             use_llm, include_api_agent, status, summary_json, result_json,
+             error, created_at, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                backtest_id,
+                _json_dumps(symbols or []),
+                period,
+                initial_cash,
+                fee_rate,
+                max_position,
+                int(use_llm),
+                int(include_api_agent),
+                status,
+                _json_dumps(summary or {}),
+                _json_dumps(result or {}),
+                error,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def list_lobster_runs(limit: int = 20) -> dict[str, Any]:
     safe_limit = max(1, min(int(limit or 20), 100))
     conn = get_db_connection()
@@ -435,6 +582,86 @@ def get_lobster_run(run_id: str) -> dict[str, Any] | None:
         "max_position": row["max_position"],
         "use_llm": bool(row["use_llm"]),
         "publish_to_platform": bool(row["publish_to_platform"]),
+        "include_api_agent": bool(row["include_api_agent"]),
+        "status": row["status"],
+        "summary": json.loads(row["summary_json"] or "{}"),
+        "result": json.loads(row["result_json"] or "{}"),
+        "error": row["error"],
+        "created_at": row["created_at"],
+        "finished_at": row["finished_at"],
+    }
+
+
+def list_lobster_backtests(limit: int = 20) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit or 20), 100))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT backtest_id, symbols, period, initial_cash, fee_rate, max_position,
+                   use_llm, include_api_agent, status, summary_json, error,
+                   created_at, finished_at
+            FROM lobster_arena_backtests
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        )
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    backtests = []
+    for row in rows:
+        backtests.append(
+            {
+                "backtest_id": row["backtest_id"],
+                "symbols": json.loads(row["symbols"] or "[]"),
+                "period": row["period"],
+                "initial_cash": row["initial_cash"],
+                "fee_rate": row["fee_rate"],
+                "max_position": row["max_position"],
+                "use_llm": bool(row["use_llm"]),
+                "include_api_agent": bool(row["include_api_agent"]),
+                "status": row["status"],
+                "summary": json.loads(row["summary_json"] or "{}"),
+                "error": row["error"],
+                "created_at": row["created_at"],
+                "finished_at": row["finished_at"],
+            }
+        )
+    return {"backtests": backtests, "count": len(backtests)}
+
+
+def get_lobster_backtest(backtest_id: str) -> dict[str, Any] | None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT backtest_id, symbols, period, initial_cash, fee_rate, max_position,
+                   use_llm, include_api_agent, status, summary_json, result_json,
+                   error, created_at, finished_at
+            FROM lobster_arena_backtests
+            WHERE backtest_id = ?
+            """,
+            (backtest_id,),
+        )
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+    return {
+        "backtest_id": row["backtest_id"],
+        "symbols": json.loads(row["symbols"] or "[]"),
+        "period": row["period"],
+        "initial_cash": row["initial_cash"],
+        "fee_rate": row["fee_rate"],
+        "max_position": row["max_position"],
+        "use_llm": bool(row["use_llm"]),
         "include_api_agent": bool(row["include_api_agent"]),
         "status": row["status"],
         "summary": json.loads(row["summary_json"] or "{}"),
@@ -547,6 +774,75 @@ def run_lobster_agent_cycle(
         raise
 
 
+def run_lobster_backtest_cycle(
+    *,
+    symbols: list[str] | None = None,
+    period: str = "3mo",
+    initial_cash: float = 100000.0,
+    fee_rate: float = 0.001,
+    max_position: float = 0.3,
+    use_llm: bool = True,
+    include_api_agent: bool = False,
+) -> dict[str, Any]:
+    from lobster_arena import build_agent_reports, run_lobster_backtest
+
+    backtest_id = f"backtest_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
+    try:
+        result = run_lobster_backtest(
+            symbols=symbols,
+            period=period,
+            initial_cash=initial_cash,
+            fee_rate=fee_rate,
+            max_position=max_position,
+            include_api_agent=include_api_agent,
+        )
+        result["backtest_id"] = backtest_id
+        result["llm"] = enhance_run_recap(result, use_llm)
+        result["llm_recap"] = result["llm"].get("recap") or _local_run_recap(result)
+        result["agent_reports"] = build_agent_reports(result)
+        result["broker_status"] = _broker_status()
+        result["system_status"] = get_lobster_system_status()
+        summary = {
+            "backtest_id": backtest_id,
+            "period": result.get("period"),
+            "final_value": result.get("final_value"),
+            "return_pct": result.get("return_pct"),
+            "max_drawdown_pct": result.get("max_drawdown_pct"),
+            "trade_count": len(result.get("trades") or []),
+            "agent_count": len(result.get("agents") or []),
+            "llm_status": result["llm"].get("status"),
+        }
+        _insert_lobster_backtest(
+            backtest_id=backtest_id,
+            symbols=symbols,
+            period=period,
+            initial_cash=initial_cash,
+            fee_rate=fee_rate,
+            max_position=max_position,
+            use_llm=use_llm,
+            include_api_agent=include_api_agent,
+            status="ok",
+            result=result,
+            summary=summary,
+        )
+        return result
+    except Exception as exc:
+        _insert_lobster_backtest(
+            backtest_id=backtest_id,
+            symbols=symbols,
+            period=period,
+            initial_cash=initial_cash,
+            fee_rate=fee_rate,
+            max_position=max_position,
+            use_llm=use_llm,
+            include_api_agent=include_api_agent,
+            status="error",
+            summary={"backtest_id": backtest_id, "period": period},
+            error=str(exc),
+        )
+        raise
+
+
 def _chat_completion(
     messages: list[dict[str, str]],
     max_tokens: int = 180,
@@ -651,3 +947,92 @@ def enhance_decisions_with_llm(result: dict[str, Any], enabled: bool) -> dict[st
             else "大模型调用失败，系统已保留本地策略理由。"
         ),
     }
+
+
+def _local_run_recap(result: dict[str, Any]) -> str:
+    agents = result.get("agents") or result.get("leaderboard") or []
+    best = agents[0] if agents else {}
+    worst = agents[-1] if len(agents) > 1 else best
+    period = result.get("period") or {}
+    trade_count = len(result.get("trades") or [])
+    risk_count = len([event for event in result.get("risk_events") or [] if event.get("severity") in {"warning", "error"}])
+    return (
+        f"本次回测覆盖 {period.get('start', '-')} 到 {period.get('end', '-')}，"
+        f"共 {period.get('trading_days', 0)} 个交易日。表现最好的是 {best.get('agent', '-')}，"
+        f"最终资产 {best.get('final_value', best.get('total_value', 0))}，收益率 {best.get('return_pct', best.get('return_percent', 0))}%。"
+        f"表现最弱的是 {worst.get('agent', '-')}。全场共产生 {trade_count} 笔模拟成交，"
+        f"最大回撤 {result.get('max_drawdown_pct', 0)}%。系统只执行纸上交易，"
+        f"触发 {risk_count} 条需要关注的风险提示，适合课堂展示策略差异和风控约束。"
+    )
+
+
+def enhance_run_recap(result: dict[str, Any], enabled: bool) -> dict[str, Any]:
+    if not enabled:
+        return {
+            "enabled": False,
+            "status": "disabled",
+            "enhanced_count": 0,
+            "fallback_reason": "用户未启用大模型复盘。",
+            "recap": _local_run_recap(result),
+        }
+    if not (os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")):
+        return {
+            "enabled": True,
+            "status": "not_configured",
+            "enhanced_count": 0,
+            "fallback_reason": "missing_llm_api_key",
+            "message": "未配置 OPENAI_API_KEY 或 LLM_API_KEY，系统已生成本地复盘。",
+            "recap": _local_run_recap(result),
+        }
+
+    agents = result.get("agents") or []
+    compact_payload = {
+        "period": result.get("period"),
+        "symbols": result.get("symbols"),
+        "initial_cash": result.get("initial_cash"),
+        "final_value": result.get("final_value"),
+        "return_pct": result.get("return_pct"),
+        "max_drawdown_pct": result.get("max_drawdown_pct"),
+        "agents": [
+            {
+                "agent": item.get("agent"),
+                "return_pct": item.get("return_pct"),
+                "max_drawdown_pct": item.get("max_drawdown_pct"),
+                "win_rate_pct": item.get("win_rate_pct"),
+                "trade_count": item.get("trade_count"),
+            }
+            for item in agents
+        ],
+        "risk_events": (result.get("risk_events") or [])[:8],
+        "hard_rule": "只解释回测表现，不允许改变交易、仓位或风控结果，不要给真实投资建议。",
+    }
+    try:
+        recap = _chat_completion(
+            [
+                {
+                    "role": "system",
+                    "content": "你是一个中文量化交易课程项目复盘助手。输出 180 字以内，说明策略表现、风险和课堂展示亮点，不给真实投资建议。",
+                },
+                {"role": "user", "content": json.dumps(compact_payload, ensure_ascii=False)},
+            ],
+            max_tokens=260,
+            temperature=0.2,
+        )
+        return {
+            "enabled": True,
+            "status": "ok",
+            "enhanced_count": 1,
+            "fallback_reason": None,
+            "message": "大模型已生成整轮回测复盘，交易结果仍由本地策略和风控决定。",
+            "recap": recap[:600],
+        }
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "status": "error",
+            "enhanced_count": 0,
+            "fallback_reason": "llm_request_failed",
+            "errors": [str(exc)],
+            "message": "大模型复盘失败，系统已生成本地复盘。",
+            "recap": _local_run_recap(result),
+        }
