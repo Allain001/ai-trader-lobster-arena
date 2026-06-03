@@ -34,6 +34,31 @@ $env:PAPER_TRADING_ALWAYS_OPEN="true"
 python -m uvicorn main:app --host 127.0.0.1 --port 8001
 ```
 
+## Render demo persistence update
+
+`render.yaml` now provisions a Render PostgreSQL database and injects
+`DATABASE_URL` into the Docker service. The Lobster Arena showcase can survive
+normal restarts and redeploys without relying on `/tmp/clawtrader.db`.
+
+Startup also supports automatic recovery:
+
+- `AI_TRADER_DEMO_AUTO_BOOTSTRAP=true`
+- `AI_TRADER_DEMO_BOOTSTRAP_MODE=when_empty`
+- optional `AI_TRADER_DEMO_SNAPSHOT_PATH=/path/to/demo.json`
+
+When enabled, startup leaves existing demo data untouched. If the database is
+empty, it restores the JSON snapshot when the snapshot path exists; otherwise
+it runs the built-in `/api/demo/bootstrap` seed flow.
+
+Snapshot helpers:
+
+```text
+GET  /api/demo/export
+POST /api/demo/import
+POST /api/demo/snapshot/save?path=/app/service/server/demo.json
+POST /api/demo/snapshot/restore?path=/app/service/server/demo.json
+```
+
 浏览器打开：
 
 ```text
@@ -121,7 +146,7 @@ agent123456
 4. 首次部署可以不填写 `LLM_API_KEY`，系统会使用规则智能体和兜底行情完整运行。
 5. 如果要开启大模型理由生成，在 Render 环境变量里填入 `LLM_API_KEY`、`LLM_API_BASE`、`LLM_MODEL`。
 
-当前 Blueprint 使用 `/tmp/clawtrader.db` 作为 SQLite 演示数据库，适合课程展示和临时访问。若要长期运行，需要改用 Render PostgreSQL 或持久磁盘。
+当前 Blueprint 使用 Render PostgreSQL，并在服务启动时开启 `AI_TRADER_DEMO_AUTO_BOOTSTRAP=true`；已有数据会保留，空库会自动恢复演示数据。
 
 部署后可访问：
 

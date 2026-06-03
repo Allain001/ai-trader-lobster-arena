@@ -21,7 +21,14 @@ from lobster_agent_runtime import (
     run_lobster_backtest_cycle,
     run_lobster_agent_cycle,
 )
-from routes_demo import export_demo_snapshot, import_demo_snapshot
+from routes_demo import (
+    demo_data_present,
+    ensure_demo_data_for_showcase,
+    export_demo_snapshot,
+    import_demo_snapshot,
+    import_demo_snapshot_file,
+    save_demo_snapshot,
+)
 
 
 def _fake_candles(symbol: str, range_: str = "3mo", interval: str = "1d") -> dict:
@@ -53,6 +60,9 @@ class LobsterArenaRuntimeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_openai_key = os.environ.pop("OPENAI_API_KEY", None)
         self.old_llm_key = os.environ.pop("LLM_API_KEY", None)
+        self.old_demo_auto = os.environ.pop("AI_TRADER_DEMO_AUTO_BOOTSTRAP", None)
+        self.old_demo_mode = os.environ.pop("AI_TRADER_DEMO_BOOTSTRAP_MODE", None)
+        self.old_demo_snapshot_path = os.environ.pop("AI_TRADER_DEMO_SNAPSHOT_PATH", None)
         database._SQLITE_DB_PATH = os.path.join(self.tmp.name, "test.db")
         database.init_database()
 
@@ -61,6 +71,18 @@ class LobsterArenaRuntimeTests(unittest.TestCase):
             os.environ["OPENAI_API_KEY"] = self.old_openai_key
         if self.old_llm_key is not None:
             os.environ["LLM_API_KEY"] = self.old_llm_key
+        if self.old_demo_auto is not None:
+            os.environ["AI_TRADER_DEMO_AUTO_BOOTSTRAP"] = self.old_demo_auto
+        else:
+            os.environ.pop("AI_TRADER_DEMO_AUTO_BOOTSTRAP", None)
+        if self.old_demo_mode is not None:
+            os.environ["AI_TRADER_DEMO_BOOTSTRAP_MODE"] = self.old_demo_mode
+        else:
+            os.environ.pop("AI_TRADER_DEMO_BOOTSTRAP_MODE", None)
+        if self.old_demo_snapshot_path is not None:
+            os.environ["AI_TRADER_DEMO_SNAPSHOT_PATH"] = self.old_demo_snapshot_path
+        else:
+            os.environ.pop("AI_TRADER_DEMO_SNAPSHOT_PATH", None)
         self.tmp.cleanup()
 
     def test_agent_cycle_records_history_and_broker_guardrail(self) -> None:
@@ -189,12 +211,82 @@ class LobsterArenaRuntimeTests(unittest.TestCase):
         )
         snapshot = export_demo_snapshot()
         self.assertIn("lobster_arena_runs", snapshot["tables"])
+        self.assertIn("challenges", snapshot["tables"])
+        self.assertIn("team_missions", snapshot["tables"])
+        self.assertIn("market_news_snapshots", snapshot["tables"])
         self.assertTrue(any(row["run_id"] == result["run_id"] for row in snapshot["tables"]["lobster_arena_runs"]))
 
         restored = import_demo_snapshot(snapshot)
         self.assertTrue(restored["ok"])
         self.assertGreaterEqual(restored["restored"]["lobster_arena_runs"], 1)
         self.assertIsNotNone(get_lobster_run(result["run_id"]))
+
+    def test_demo_snapshot_file_round_trip(self) -> None:
+        result = run_lobster_agent_cycle(
+            symbols=["NVDA"],
+            initial_cash=100000,
+            fee_rate=0.001,
+            max_position=0.2,
+            use_llm=False,
+            publish_to_platform=False,
+            include_api_agent=False,
+            source="unit-test",
+        )
+        snapshot_path = os.path.join(self.tmp.name, "snapshots", "demo.json")
+
+        saved = save_demo_snapshot(snapshot_path)
+        self.assertTrue(saved["ok"])
+        self.assertGreaterEqual(saved["tables"]["lobster_arena_runs"], 1)
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM lobster_arena_runs")
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertIsNone(get_lobster_run(result["run_id"]))
+        restored = import_demo_snapshot_file(snapshot_path)
+        self.assertEqual(restored["source"], "snapshot-file")
+        self.assertIsNotNone(get_lobster_run(result["run_id"]))
+
+    def test_showcase_auto_bootstrap_uses_snapshot_when_database_is_empty(self) -> None:
+        result = run_lobster_agent_cycle(
+            symbols=["NVDA"],
+            initial_cash=100000,
+            fee_rate=0.001,
+            max_position=0.2,
+            use_llm=False,
+            publish_to_platform=True,
+            include_api_agent=False,
+            source="snapshot-seed",
+        )
+        snapshot_path = os.path.join(self.tmp.name, "demo-startup.json")
+        save_demo_snapshot(snapshot_path)
+
+        database._SQLITE_DB_PATH = os.path.join(self.tmp.name, "empty-startup.db")
+        database.init_database()
+        self.assertFalse(demo_data_present())
+
+        os.environ["AI_TRADER_DEMO_AUTO_BOOTSTRAP"] = "true"
+        os.environ["AI_TRADER_DEMO_BOOTSTRAP_MODE"] = "when_empty"
+        os.environ["AI_TRADER_DEMO_SNAPSHOT_PATH"] = snapshot_path
+        status = ensure_demo_data_for_showcase()
+
+        self.assertEqual(status["action"], "imported_snapshot")
+        self.assertIsNotNone(get_lobster_run(result["run_id"]))
+        follow_up = run_lobster_agent_cycle(
+            symbols=["NVDA"],
+            initial_cash=100000,
+            fee_rate=0.001,
+            max_position=0.2,
+            use_llm=False,
+            publish_to_platform=True,
+            include_api_agent=False,
+            source="post-restore",
+        )
+        self.assertTrue(follow_up["run_id"].startswith("lobster_"))
 
     def test_platform_posts_have_distinct_strategy_and_discussion_voice(self) -> None:
         run_lobster_agent_cycle(

@@ -21,5 +21,7 @@ class EnvExampleTests(unittest.TestCase):
         self.assertEqual(values["ENVIRONMENT"], "development")
         self.assertEqual(values["DATABASE_URL"], "")
         self.assertEqual(values["DB_PATH"], "service/server/data/clawtrader.db")
+        self.assertEqual(values["AI_TRADER_DEMO_AUTO_BOOTSTRAP"], "false")
+        self.assertEqual(values["AI_TRADER_DEMO_BOOTSTRAP_MODE"], "when_empty")
         self.assertEqual(values["ALPHA_VANTAGE_BASE_URL"], "https://www.alphavantage.co/query")
         self.assertNotIn("ai_trader:change-me", values.values())

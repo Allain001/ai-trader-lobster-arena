@@ -20,11 +20,22 @@ services:
         value: "false"
       - key: LOBSTER_ARENA_INCLUDE_API_AGENT
         value: "true"
-      - key: DB_PATH
-        value: /tmp/clawtrader.db
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-trader-lobster-arena-db
+          property: connectionString
+      - key: AI_TRADER_DEMO_AUTO_BOOTSTRAP
+        value: "true"
+      - key: AI_TRADER_DEMO_BOOTSTRAP_MODE
+        value: when_empty
       - key: LLM_API_KEY
         sync: false
       - key: LLM_API_BASE
         value: https://api.openai.com/v1
       - key: LLM_MODEL
         value: gpt-4o-mini
+
+databases:
+  - name: ai-trader-lobster-arena-db
+    databaseName: ai_trader_lobster_arena
+    plan: free

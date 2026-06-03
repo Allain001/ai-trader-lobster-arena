@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 from cache import get_cache_status
 from database import init_database, get_database_status
 from routes import create_app
+from routes_demo import ensure_demo_data_for_showcase
 from tasks import (
     _update_trending_cache,
     background_tasks_enabled_for_api,
@@ -71,6 +72,13 @@ async def startup_event():
         cache_status.get("prefix"),
         cache_status.get("client_installed"),
         cache_status.get("last_error"),
+    )
+    demo_status = ensure_demo_data_for_showcase()
+    logger.info(
+        "Demo showcase bootstrap: action=%s reason=%s details=%s",
+        demo_status.get("action"),
+        demo_status.get("reason"),
+        {key: value for key, value in demo_status.items() if key not in {"action", "reason"}},
     )
     # Initialize trending cache
     logger.info("Initializing trending cache...")
